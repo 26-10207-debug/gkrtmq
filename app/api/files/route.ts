@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   const row = await DB.prepare(`
     SELECT object_key AS objectKey, original_name AS originalName, content_type AS contentType
     FROM contributions
-    WHERE id = ? AND status = 'published'
+    WHERE id = ? AND status IN ('published', 'published_ai')
   `).bind(id).first<{ objectKey: string; originalName: string; contentType: string }>();
   if (!row) return Response.json({ error: "자료를 찾을 수 없습니다." }, { status: 404 });
 

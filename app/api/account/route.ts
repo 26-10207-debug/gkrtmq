@@ -16,10 +16,28 @@ export async function GET() {
       updated_at = CURRENT_TIMESTAMP
   `).bind(user.userId, user.email, user.displayName).run();
 
-  const stats = await DB.prepare(`
-    SELECT COUNT(*) AS contributionCount, COALESCE(SUM(view_count), 0) AS totalViews
-    FROM contributions WHERE owner_id = ? AND status = 'published'
-  `).bind(user.userId).first<{ contributionCount: number; totalViews: number }>();
+  const [profile, stats, contributions, ledger] = await Promise.all([
+    DB.prepare("SELECT credit_balance AS creditBalance FROM users WHERE id = ?").bind(user.userId).first<{ creditBalance: number }>(),
+    DB.prepare(`
+      SELECT COUNT(*) AS contributionCount, COALESCE(SUM(view_count), 0) AS totalViews
+      FROM contributions WHERE owner_id = ? AND status IN ('published', 'published_ai')
+    `).bind(user.userId).first<{ contributionCount: number; totalViews: number }>(),
+    DB.prepare(`
+      SELECT id, title, status, publish_mode AS publishMode, credits_awarded AS creditsAwarded,
+             view_count AS viewCount, error_message AS errorMessage, created_at AS createdAt
+      FROM contributions WHERE owner_id = ? ORDER BY created_at DESC LIMIT 50
+    `).bind(user.userId).all(),
+    DB.prepare(`
+      SELECT id, amount, reason, contribution_id AS contributionId, created_at AS createdAt
+      FROM credit_ledger WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
+    `).bind(user.userId).all(),
+  ]);
 
-  return Response.json({ user, stats: stats ?? { contributionCount: 0, totalViews: 0 } });
+  return Response.json({
+    user,
+    creditBalance: profile?.creditBalance ?? 0,
+    stats: stats ?? { contributionCount: 0, totalViews: 0 },
+    contributions: contributions.results,
+    ledger: ledger.results,
+  });
 }

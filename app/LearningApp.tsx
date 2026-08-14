@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type View = "search" | "detail" | "study" | "contribute" | "account";
+type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing";
 type StudyMode = "info" | "examples" | "recall" | "plan";
 
 type Asset = {
@@ -34,6 +34,10 @@ type ContributionRecord = {
   ownerDisplayName: string;
   viewCount: number;
   createdAt: string;
+  status?: string;
+  publishMode?: "instant" | "ai_review";
+  creditsAwarded?: number;
+  errorMessage?: string | null;
   isMine?: number;
 };
 
@@ -43,7 +47,7 @@ function contributionToAsset(item: ContributionRecord): Asset {
     title: item.title,
     description: item.sourceNote || `${item.originalName} · 사용자가 직접 올린 학습 자료`,
     type: "사용자 자료",
-    tags: ["즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", item.ownerDisplayName || "기여자"],
+    tags: [item.publishMode === "ai_review" ? "AI 검수 완료" : "즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", item.ownerDisplayName || "기여자"],
     rating: 0,
     reviews: 0,
     views: item.viewCount,
@@ -253,6 +257,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         onLogo={() => setView("search")}
         onContribute={() => setView("contribute")}
         onAccount={() => setView("account")}
+        onPricing={() => setView("pricing")}
         user={user}
       />
 
@@ -284,7 +289,8 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         />
       )}
       {view === "contribute" && <ContributionScreen onBack={() => setView("search")} onPublished={addPublishedContribution} />}
-      {view === "account" && <AccountScreen user={user} assets={communityAssets} onBack={() => setView("search")} onOpen={openAsset} />}
+      {view === "account" && <AccountScreen user={user} onBack={() => setView("search")} onPricing={() => setView("pricing")} />}
+      {view === "pricing" && <PricingScreen onBack={() => setView("search")} />}
     </div>
   );
 }
@@ -295,6 +301,7 @@ function Header(props: {
   onLogo: () => void;
   onContribute: () => void;
   onAccount: () => void;
+  onPricing: () => void;
   user: AccountUser | null;
 }) {
   return (
@@ -308,6 +315,7 @@ function Header(props: {
         <input value={props.query} onChange={(event) => props.onQueryChange(event.target.value)} aria-label="학습 자료 검색" placeholder="무엇을 배우고 싶나요?" />
       </label>
       <div className="header-actions">
+        <button className="pricing-link" type="button" onClick={props.onPricing}>요금제</button>
         <button className="account-button" type="button" onClick={props.onAccount} aria-label="내 계정 열기">
           <span>{props.user?.displayName?.slice(0, 1).toUpperCase() || "?"}</span>
           <b>{props.user?.displayName || "계정"}</b>
@@ -338,7 +346,7 @@ function SearchScreen(props: {
         ))}
         <div className="filter-divider" />
         <p className="section-label">게시 원칙</p>
-        <p className="sidebar-note"><span className="status-dot" /> 현재는 기여 자료가 AI 검수 없이 즉시 공개됩니다.</p>
+        <p className="sidebar-note"><span className="status-dot" /> 즉시 공개는 보상 없음 · AI 검수 통과 자료는 크레딧 지급</p>
       </aside>
 
       <main className="results-main">
@@ -384,7 +392,7 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
             <p className="eyebrow">사용자 기여 · 즉시 공개 자료</p>
             <h1>{props.asset.title}</h1>
             <p>{props.asset.description}</p>
-            <div className="tag-row"><span className="tag accent">AI 미검수</span><span className="tag">기여자 {props.asset.ownerName || "사용자"}</span><span className="tag">{props.asset.createdAt ? new Date(props.asset.createdAt).toLocaleDateString("ko-KR") : "방금 공개"}</span></div>
+            <div className="tag-row"><span className="tag accent">{props.asset.tags[0]}</span><span className="tag">기여자 {props.asset.ownerName || "사용자"}</span><span className="tag">{props.asset.createdAt ? new Date(props.asset.createdAt).toLocaleDateString("ko-KR") : "방금 공개"}</span></div>
           </div>
           <div className="uploaded-file-card">
             <span>원본 학습 자료</span>
@@ -393,7 +401,7 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
             <a className="primary-button" href={props.asset.fileUrl} target="_blank" rel="noreferrer">파일 열기</a>
           </div>
         </section>
-        <section className="upload-notice"><strong>현재 운영 방식</strong><p>이 자료는 요청하신 초기 운영 방식에 따라 AI 분석이나 검수 없이 바로 공개되었습니다. 추후 AI 구조화 기능이 추가되면 별도의 학습 객체 버전을 연결할 수 있습니다.</p></section>
+        <section className="upload-notice"><strong>공개 방식</strong><p>{props.asset.tags[0] === "AI 검수 완료" ? "AI가 학습 구조와 품질 기준을 확인한 뒤 공개된 자료입니다. 기여자에게 검수 공개 보상 크레딧이 지급되었습니다." : "기여자가 AI 검수 없이 즉시 공개한 원본 자료입니다. 이 방식에는 기여 보상 크레딧이 지급되지 않습니다."}</p></section>
       </main>
     );
   }
@@ -575,6 +583,7 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [sourceNote, setSourceNote] = useState("");
+  const [publishMode, setPublishMode] = useState<"instant" | "ai_review">("instant");
   const [licenseConfirmed, setLicenseConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; status?: string } | null>(null);
@@ -588,12 +597,13 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
     body.set("file", file);
     body.set("title", title);
     body.set("sourceNote", sourceNote);
+    body.set("publishMode", publishMode);
     body.set("licenseConfirmed", String(licenseConfirmed));
     try {
       const response = await fetch("/api/contributions", { method: "POST", body });
       const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord & { status?: string } };
       setResult({ ok: response.ok, message: data.message || data.error || "처리 결과를 확인할 수 없습니다.", status: data.contribution?.status });
-      if (response.ok && data.contribution) onPublished(data.contribution);
+      if (response.ok && data.contribution && ["published", "published_ai"].includes(data.contribution.status || "")) onPublished(data.contribution);
     } catch {
       setResult({ ok: false, message: "업로드 중 연결 문제가 발생했습니다. 다시 시도해 주세요." });
     } finally {
@@ -605,13 +615,14 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
     <main className="contribution-main">
       <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
       <div className="contribution-grid">
-        <section className="contribution-intro"><p className="eyebrow">자료 기여</p><h1>업로드하면 검색에 바로 공개됩니다.</h1><p>현재 초기 버전에서는 AI 검수 없이 원본 자료를 즉시 공개합니다. 제목과 출처를 정확히 적고, 공유 권한이 있는 자료만 올려주세요.</p><ol><li><span>1</span><div><strong>계정에 연결</strong><p>로그인한 계정 이름으로 기여 기록을 남깁니다.</p></div></li><li><span>2</span><div><strong>파일 안전 저장</strong><p>사진, PDF, 문서를 대용량 저장소에 보관합니다.</p></div></li><li><span>3</span><div><strong>즉시 공개</strong><p>저장이 끝나면 바로 검색 결과와 내 계정에 표시됩니다.</p></div></li></ol></section>
+        <section className="contribution-intro"><p className="eyebrow">자료 기여</p><h1>공개 방식을 직접 선택하세요.</h1><p>빠르게 공유하거나, AI 검수를 거쳐 학습 자료로 인정받고 크레딧을 받을 수 있습니다.</p><ol><li><span>1</span><div><strong>즉시 공개</strong><p>검수 없이 바로 검색됩니다. 빠르지만 보상 크레딧은 없습니다.</p></div></li><li><span>2</span><div><strong>AI 검수 공개</strong><p>개념·예시·능동 회상 구조와 품질을 확인한 뒤 공개합니다.</p></div></li><li><span>3</span><div><strong>검수 보상</strong><p>AI 검수를 통과해 공개되면 계정에 20크레딧을 지급합니다.</p></div></li></ol></section>
         <form className="contribution-form" onSubmit={submit}>
+          <fieldset className="publish-mode-field"><legend>공개 방식</legend><div><button className={publishMode === "instant" ? "publish-option active" : "publish-option"} type="button" onClick={() => { setPublishMode("instant"); setResult(null); }}><span>즉시 공개</span><strong>0 크레딧</strong><small>AI 검수 없이 바로 공개</small></button><button className={publishMode === "ai_review" ? "publish-option reward active" : "publish-option reward"} type="button" onClick={() => { setPublishMode("ai_review"); setResult(null); }}><span>AI 검수 공개</span><strong>+20 크레딧</strong><small>통과한 자료만 공개</small></button></div></fieldset>
           <label><span>자료 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 돌림힘 수업 필기와 예시" required /></label>
           <label className="upload-field"><span>파일</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.docx,.pptx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><div><strong>{file ? file.name : "파일을 선택하세요"}</strong><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)}MB` : "PDF, 이미지, 문서 · 최대 8MB"}</small></div></label>
           <label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} placeholder="자료의 출처와 어떤 학습에 도움이 되는지 적어주세요." rows={5} /></label>
-          <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, AI 검수 없이 즉시 공개되는 것에 동의합니다.</span></label>
-          <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? "업로드하고 있어요…" : "즉시 공개하기"}</button>
+          <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, {publishMode === "instant" ? "검수 없이 즉시 공개되고 크레딧이 지급되지 않는 것" : "AI가 자료를 분석하며 통과한 경우에만 공개·보상되는 것"}에 동의합니다.</span></label>
+          <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? (publishMode === "instant" ? "공개하고 있어요…" : "AI 검수를 진행하고 있어요…") : (publishMode === "instant" ? "즉시 공개하기 · 0 크레딧" : "AI 검수 요청하기 · 통과 시 +20")}</button>
           {result && <div className={result.ok ? "submission-result success" : "submission-result error"}><strong>{result.ok ? "접수 완료" : "확인 필요"}</strong><p>{result.message}</p>{result.status && <span>현재 상태 · {result.status}</span>}</div>}
         </form>
       </div>
@@ -619,18 +630,66 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
   );
 }
 
-function AccountScreen({ user, assets: uploadedAssets, onBack, onOpen }: { user: AccountUser | null; assets: Asset[]; onBack: () => void; onOpen: (asset: Asset) => void }) {
-  const mine = user ? uploadedAssets.filter((asset) => asset.isMine) : [];
+type AccountData = {
+  creditBalance: number;
+  stats: { contributionCount: number; totalViews: number };
+  contributions: Array<{ id: string; title: string; status: string; publishMode: string; creditsAwarded: number; viewCount: number; errorMessage?: string | null; createdAt: string }>;
+  ledger: Array<{ id: number; amount: number; reason: string; contributionId?: string | null; createdAt: string }>;
+};
+
+const statusLabels: Record<string, string> = {
+  published: "즉시 공개",
+  awaiting_ai: "AI 검수 대기",
+  analyzing: "AI 검수 중",
+  published_ai: "AI 검수 통과",
+  review_rejected: "검수 반려",
+  review_failed: "검수 오류",
+};
+
+function AccountScreen({ user, onBack, onPricing }: { user: AccountUser | null; onBack: () => void; onPricing: () => void }) {
+  const [data, setData] = useState<AccountData | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/account").then((response) => response.json()).then((value: AccountData) => { if (active) setData(value); }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
   return (
     <main className="account-main">
       <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
       <section className="account-hero">
         <div className="account-avatar">{user?.displayName?.slice(0, 1).toUpperCase() || "?"}</div>
-        <div><p className="eyebrow">내 계정</p><h1>{user?.displayName || "로그인 정보 없음"}</h1><p>{user?.email || "배포된 사이트에서 ChatGPT 계정으로 로그인하면 계정이 연결됩니다."}</p></div>
+        <div><p className="eyebrow">내 계정</p><h1>{user?.displayName || "로그인 정보 없음"}</h1><p>{user?.email || "배포된 사이트에서 로그인하면 계정이 연결됩니다."}</p></div>
         {user && <a className="secondary-button" href="/signout-with-chatgpt?return_to=/">로그아웃</a>}
       </section>
-      <section className="account-stats"><div><span>공개한 자료</span><strong>{mine.length}</strong></div><div><span>누적 조회</span><strong>{mine.reduce((sum, asset) => sum + asset.views, 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>
-      <section className="account-contributions"><div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>내가 올린 자료</h2></div></div>{mine.length ? <div className="result-list">{mine.map((asset, index) => <button className="result-card" type="button" key={asset.id} onClick={() => onOpen(asset)}><span className="file-number">{String(index + 1).padStart(2, "0")}</span><span className="file-copy"><span className="file-title">{asset.title}</span><span className="file-description">{asset.description}</span><span className="tag-row"><span className="tag accent">즉시 공개</span><span className="tag">조회 {asset.views}</span></span></span><span className="card-arrow">→</span></button>)}</div> : <div className="empty-state"><strong>아직 공개한 자료가 없습니다.</strong><span>자료 기여에서 첫 파일을 올려보세요.</span></div>}</section>
+      <section className="credit-wallet"><div><span>보유 크레딧</span><strong>{data?.creditBalance ?? 0}<small> C</small></strong><p>AI 검수 통과 자료를 기여하면 20크레딧을 받습니다.</p></div><button className="primary-button" type="button" onClick={onPricing}>크레딧·요금제 보기</button></section>
+      <section className="account-stats"><div><span>공개한 자료</span><strong>{data?.stats.contributionCount ?? 0}</strong></div><div><span>누적 조회</span><strong>{(data?.stats.totalViews ?? 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>
+      <section className="account-contributions">
+        <div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>검수·공개 현황</h2></div></div>
+        {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <article key={item.id}><div><strong>{item.title}</strong><span>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</span></div><div className="record-meta"><span className={`status-pill ${item.status}`}>{statusLabels[item.status] || item.status}</span><span>{item.publishMode === "ai_review" ? "AI 검수 공개" : "즉시 공개"}</span><b>{item.creditsAwarded > 0 ? `+${item.creditsAwarded} C` : "보상 없음"}</b></div>{item.errorMessage && <p>{item.errorMessage}</p>}</article>)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
+      </section>
+      <section className="credit-history"><div className="section-heading"><div><p className="eyebrow">크레딧</p><h2>지급 내역</h2></div></div>{data?.ledger.length ? <div>{data.ledger.map((entry) => <article key={entry.id}><div><strong>{entry.reason}</strong><span>{new Date(entry.createdAt).toLocaleDateString("ko-KR")}</span></div><b>+{entry.amount} C</b></article>)}</div> : <div className="empty-state compact-empty"><strong>아직 크레딧 내역이 없습니다.</strong><span>AI 검수를 통과한 자료가 공개되면 여기에 기록됩니다.</span></div>}</section>
+    </main>
+  );
+}
+
+function PricingScreen({ onBack }: { onBack: () => void }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const [demoComplete, setDemoComplete] = useState(false);
+  const plans = [
+    { name: "무료", price: "₩0", description: "검색과 기본 학습 도구", features: ["정보·예시·능동 회상", "즉시 공개 기여", "AI 검수 기여 보상"] },
+    { name: "플러스", price: "₩5,900", description: "월 100크레딧 포함", features: ["무료 기능 전체", "AI 맞춤 학습 100회분", "학습 기록 확장"] },
+    { name: "프로", price: "₩12,900", description: "월 300크레딧 포함", features: ["플러스 기능 전체", "AI 맞춤 학습 300회분", "고급 학습 분석"] },
+  ];
+  const offers = ["100 크레딧 · ₩4,900", "300 크레딧 · ₩12,900", "1,000 크레딧 · ₩35,000"];
+
+  return (
+    <main className="pricing-main">
+      <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
+      <section className="pricing-hero"><p className="eyebrow">요금제와 크레딧</p><h1>필요한 만큼 배우고,<br />좋은 자료로 다시 채우세요.</h1><p>크레딧은 AI 학습 기능에 사용하고, AI 검수를 통과한 자료를 기여하면 다시 받을 수 있습니다.</p><div className="demo-banner"><strong>결제 UI 데모</strong><span>현재는 카드·계좌와 연결되지 않으며 실제 청구나 크레딧 충전이 발생하지 않습니다.</span></div></section>
+      <section className="plan-cards">{plans.map((plan) => <article className={plan.name === "플러스" ? "featured" : ""} key={plan.name}><span>{plan.name}</span><strong>{plan.price}<small>{plan.price !== "₩0" ? " / 월" : ""}</small></strong><p>{plan.description}</p><ul>{plan.features.map((feature) => <li key={feature}>✓ {feature}</li>)}</ul><button className={plan.name === "무료" ? "secondary-button" : "primary-button"} type="button" onClick={() => { setSelected(`${plan.name} 요금제`); setDemoComplete(false); }}>{plan.name === "무료" ? "현재 요금제" : `${plan.name} 선택`}</button></article>)}</section>
+      <section className="credit-shop"><div><p className="eyebrow">일회성 충전</p><h2>크레딧 추가 구매</h2><p>구독 없이 필요한 만큼만 추가하는 화면입니다.</p></div><div>{offers.map((offer) => <button type="button" key={offer} onClick={() => { setSelected(offer); setDemoComplete(false); }}><strong>{offer.split(" · ")[0]}</strong><span>{offer.split(" · ")[1]}</span><b>선택 →</b></button>)}</div></section>
+      {selected && <section className="checkout-demo"><div className="checkout-heading"><div><span>선택 항목</span><h2>{selected}</h2></div><button type="button" onClick={() => setSelected(null)}>닫기</button></div><div className="payment-methods"><button className="active" type="button">카드</button><button type="button">계좌이체</button><button type="button">간편결제</button></div><div className="fake-payment-fields"><label><span>결제자 이름</span><input placeholder="홍길동" /></label><label><span>카드 또는 계좌</span><input placeholder="실제 정보는 입력하지 마세요" /></label></div><button className="primary-button wide" type="button" onClick={() => setDemoComplete(true)}>데모 결제 확인</button>{demoComplete && <div className="demo-success"><strong>결제 화면 준비 완료</strong><p>UI 흐름만 확인했습니다. 실제 청구·계좌 연결·크레딧 지급은 실행되지 않았습니다.</p></div>}</section>}
     </main>
   );
 }

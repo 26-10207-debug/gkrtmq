@@ -16,6 +16,9 @@ export const contributions = sqliteTable("contributions", {
   ownerEmail: text("owner_email"),
   ownerDisplayName: text("owner_display_name"),
   viewCount: integer("view_count").notNull().default(0),
+  publishMode: text("publish_mode").notNull().default("instant"),
+  creditsAwarded: integer("credits_awarded").notNull().default(0),
+  reviewedAt: text("reviewed_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
@@ -23,8 +26,18 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   email: text("email").notNull(),
   displayName: text("display_name").notNull(),
+  creditBalance: integer("credit_balance").notNull().default(0),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const creditLedger = sqliteTable("credit_ledger", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  userId: text("user_id").notNull(),
+  amount: integer("amount").notNull(),
+  reason: text("reason").notNull(),
+  contributionId: text("contribution_id"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const learningProgress = sqliteTable("learning_progress", {
