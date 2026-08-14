@@ -1,8 +1,8 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type View = "search" | "detail" | "study" | "contribute";
+type View = "search" | "detail" | "study" | "contribute" | "account";
 type StudyMode = "info" | "examples" | "recall" | "plan";
 
 type Asset = {
@@ -16,7 +16,47 @@ type Asset = {
   views: number;
   examples: number;
   questions: number;
+  fileUrl?: string;
+  sourceNote?: string;
+  ownerName?: string;
+  createdAt?: string;
+  isUpload?: boolean;
+  isMine?: boolean;
 };
+
+type AccountUser = { displayName: string; email: string };
+type ContributionRecord = {
+  id: string;
+  title: string;
+  originalName: string;
+  contentType: string;
+  sourceNote: string;
+  ownerDisplayName: string;
+  viewCount: number;
+  createdAt: string;
+  isMine?: number;
+};
+
+function contributionToAsset(item: ContributionRecord): Asset {
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.sourceNote || `${item.originalName} · 사용자가 직접 올린 학습 자료`,
+    type: "사용자 자료",
+    tags: ["즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", item.ownerDisplayName || "기여자"],
+    rating: 0,
+    reviews: 0,
+    views: item.viewCount,
+    examples: 0,
+    questions: 0,
+    fileUrl: `/api/files?id=${encodeURIComponent(item.id)}`,
+    sourceNote: item.sourceNote,
+    ownerName: item.ownerDisplayName,
+    createdAt: item.createdAt,
+    isUpload: true,
+    isMine: item.isMine === 1,
+  };
+}
 
 const assets: Asset[] = [
   {
@@ -125,7 +165,7 @@ function formatViews(value: number) {
   return value >= 10000 ? `${(value / 10000).toFixed(1)}만` : value.toLocaleString("ko-KR");
 }
 
-export function LearningApp() {
+export function LearningApp({ user }: { user: AccountUser | null }) {
   const [view, setView] = useState<View>("search");
   const [query, setQuery] = useState("돌림힘");
   const [filter, setFilter] = useState("전체");
@@ -135,19 +175,38 @@ export function LearningApp() {
   const [revealed, setRevealed] = useState(false);
   const [answer, setAnswer] = useState("");
   const [confidence, setConfidence] = useState(0);
+  const [communityAssets, setCommunityAssets] = useState<Asset[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/contributions")
+      .then((response) => response.json())
+      .then((data: { contributions?: ContributionRecord[] }) => {
+        if (active) setCommunityAssets((data.contributions ?? []).map(contributionToAsset));
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  const allAssets = useMemo(() => [...communityAssets, ...assets], [communityAssets]);
 
   const filteredAssets = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    return assets.filter((asset) => {
+    return allAssets.filter((asset) => {
       const matchesQuery = !keyword || `${asset.title} ${asset.description} ${asset.tags.join(" ")}`.toLowerCase().includes(keyword) || keyword === "토크";
       return matchesQuery && (filter === "전체" || asset.type === filter);
     });
-  }, [filter, query]);
+  }, [allAssets, filter, query]);
 
   function openAsset(asset: Asset) {
     setSelectedAsset(asset);
     setView("detail");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function addPublishedContribution(item: ContributionRecord) {
+    const asset = contributionToAsset(item);
+    setCommunityAssets((current) => [asset, ...current.filter((existing) => existing.id !== asset.id)]);
   }
 
   function startStudy(mode: StudyMode) {
@@ -166,7 +225,6 @@ export function LearningApp() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          learnerId: "mvp-learner",
           assetId: selectedAsset.id,
           mode,
           completedItems,
@@ -194,6 +252,8 @@ export function LearningApp() {
         onQueryChange={(value) => { setQuery(value); setView("search"); }}
         onLogo={() => setView("search")}
         onContribute={() => setView("contribute")}
+        onAccount={() => setView("account")}
+        user={user}
       />
 
       {view === "search" && (
@@ -223,7 +283,8 @@ export function LearningApp() {
           onMode={startStudy}
         />
       )}
-      {view === "contribute" && <ContributionScreen onBack={() => setView("search")} />}
+      {view === "contribute" && <ContributionScreen onBack={() => setView("search")} onPublished={addPublishedContribution} />}
+      {view === "account" && <AccountScreen user={user} assets={communityAssets} onBack={() => setView("search")} onOpen={openAsset} />}
     </div>
   );
 }
@@ -233,6 +294,8 @@ function Header(props: {
   onQueryChange: (value: string) => void;
   onLogo: () => void;
   onContribute: () => void;
+  onAccount: () => void;
+  user: AccountUser | null;
 }) {
   return (
     <header className="topbar">
@@ -244,7 +307,13 @@ function Header(props: {
         <span aria-hidden="true">⌕</span>
         <input value={props.query} onChange={(event) => props.onQueryChange(event.target.value)} aria-label="학습 자료 검색" placeholder="무엇을 배우고 싶나요?" />
       </label>
-      <button className="primary-button compact" type="button" onClick={props.onContribute}>자료 기여</button>
+      <div className="header-actions">
+        <button className="account-button" type="button" onClick={props.onAccount} aria-label="내 계정 열기">
+          <span>{props.user?.displayName?.slice(0, 1).toUpperCase() || "?"}</span>
+          <b>{props.user?.displayName || "계정"}</b>
+        </button>
+        <button className="primary-button compact" type="button" onClick={props.onContribute}>자료 기여</button>
+      </div>
     </header>
   );
 }
@@ -257,7 +326,7 @@ function SearchScreen(props: {
   onQuery: (value: string) => void;
   onOpen: (asset: Asset) => void;
 }) {
-  const filters = ["전체", "개념 설명", "예시·적용", "회상 문제", "오개념"];
+  const filters = ["전체", "사용자 자료", "개념 설명", "예시·적용", "회상 문제", "오개념"];
   return (
     <div className="search-layout">
       <aside className="filter-panel">
@@ -269,7 +338,7 @@ function SearchScreen(props: {
         ))}
         <div className="filter-divider" />
         <p className="section-label">게시 원칙</p>
-        <p className="sidebar-note"><span className="status-dot" /> 모든 자료는 AI 구조화와 검증을 거친 뒤 공개됩니다.</p>
+        <p className="sidebar-note"><span className="status-dot" /> 현재는 기여 자료가 AI 검수 없이 즉시 공개됩니다.</p>
       </aside>
 
       <main className="results-main">
@@ -306,6 +375,28 @@ function SearchScreen(props: {
 }
 
 function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void }) {
+  if (props.asset.isUpload) {
+    return (
+      <main className="detail-main">
+        <button className="back-button" type="button" onClick={props.onBack}>← 검색 결과</button>
+        <section className="detail-hero uploaded-detail">
+          <div className="detail-copy">
+            <p className="eyebrow">사용자 기여 · 즉시 공개 자료</p>
+            <h1>{props.asset.title}</h1>
+            <p>{props.asset.description}</p>
+            <div className="tag-row"><span className="tag accent">AI 미검수</span><span className="tag">기여자 {props.asset.ownerName || "사용자"}</span><span className="tag">{props.asset.createdAt ? new Date(props.asset.createdAt).toLocaleDateString("ko-KR") : "방금 공개"}</span></div>
+          </div>
+          <div className="uploaded-file-card">
+            <span>원본 학습 자료</span>
+            <strong>{props.asset.tags[1]}</strong>
+            <p>업로더가 공개한 원본입니다. 정확성과 저작권 여부를 직접 확인해 주세요.</p>
+            <a className="primary-button" href={props.asset.fileUrl} target="_blank" rel="noreferrer">파일 열기</a>
+          </div>
+        </section>
+        <section className="upload-notice"><strong>현재 운영 방식</strong><p>이 자료는 요청하신 초기 운영 방식에 따라 AI 분석이나 검수 없이 바로 공개되었습니다. 추후 AI 구조화 기능이 추가되면 별도의 학습 객체 버전을 연결할 수 있습니다.</p></section>
+      </main>
+    );
+  }
   return (
     <main className="detail-main">
       <button className="back-button" type="button" onClick={props.onBack}>← 검색 결과</button>
@@ -480,7 +571,7 @@ function ChoiceGroup({ label, values, value, onChange }: { label: string; values
   return <fieldset className="choice-group"><legend>{label}</legend><div>{values.map((item) => <button className={value === item ? "active" : ""} type="button" key={item} onClick={() => onChange(item)}>{item}</button>)}</div></fieldset>;
 }
 
-function ContributionScreen({ onBack }: { onBack: () => void }) {
+function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPublished: (item: ContributionRecord) => void }) {
   const [file, setFile] = useState<File | null>(null);
   const [title, setTitle] = useState("");
   const [sourceNote, setSourceNote] = useState("");
@@ -500,8 +591,9 @@ function ContributionScreen({ onBack }: { onBack: () => void }) {
     body.set("licenseConfirmed", String(licenseConfirmed));
     try {
       const response = await fetch("/api/contributions", { method: "POST", body });
-      const data = await response.json() as { error?: string; message?: string; contribution?: { status?: string } };
+      const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord & { status?: string } };
       setResult({ ok: response.ok, message: data.message || data.error || "처리 결과를 확인할 수 없습니다.", status: data.contribution?.status });
+      if (response.ok && data.contribution) onPublished(data.contribution);
     } catch {
       setResult({ ok: false, message: "업로드 중 연결 문제가 발생했습니다. 다시 시도해 주세요." });
     } finally {
@@ -513,16 +605,32 @@ function ContributionScreen({ onBack }: { onBack: () => void }) {
     <main className="contribution-main">
       <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
       <div className="contribution-grid">
-        <section className="contribution-intro"><p className="eyebrow">자료 기여</p><h1>올려주신 자료는 그대로 공개되지 않습니다.</h1><p>원본은 비공개로 보관되고, 모든 자료는 AI가 개념·예시·반례·오개념·능동 회상 질문이 포함된 표준 학습 객체로 바꿉니다.</p><ol><li><span>1</span><div><strong>원본 안전 보관</strong><p>사진, PDF, 문서를 비공개 저장소에 보관합니다.</p></div></li><li><span>2</span><div><strong>AI 필수 분석</strong><p>내용을 확인하고 학습에 적합한 구조로 다시 만듭니다.</p></div></li><li><span>3</span><div><strong>검증 후 공개</strong><p>정확성과 중복 검사를 통과한 학습 객체만 검색됩니다.</p></div></li></ol></section>
+        <section className="contribution-intro"><p className="eyebrow">자료 기여</p><h1>업로드하면 검색에 바로 공개됩니다.</h1><p>현재 초기 버전에서는 AI 검수 없이 원본 자료를 즉시 공개합니다. 제목과 출처를 정확히 적고, 공유 권한이 있는 자료만 올려주세요.</p><ol><li><span>1</span><div><strong>계정에 연결</strong><p>로그인한 계정 이름으로 기여 기록을 남깁니다.</p></div></li><li><span>2</span><div><strong>파일 안전 저장</strong><p>사진, PDF, 문서를 대용량 저장소에 보관합니다.</p></div></li><li><span>3</span><div><strong>즉시 공개</strong><p>저장이 끝나면 바로 검색 결과와 내 계정에 표시됩니다.</p></div></li></ol></section>
         <form className="contribution-form" onSubmit={submit}>
           <label><span>자료 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 돌림힘 수업 필기와 예시" required /></label>
           <label className="upload-field"><span>파일</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.docx,.pptx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><div><strong>{file ? file.name : "파일을 선택하세요"}</strong><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)}MB` : "PDF, 이미지, 문서 · 최대 8MB"}</small></div></label>
           <label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} placeholder="자료의 출처와 어떤 학습에 도움이 되는지 적어주세요." rows={5} /></label>
-          <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 기여할 권한이 있으며, AI가 학습 객체로 재구성하는 것에 동의합니다.</span></label>
-          <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? "원본 저장 및 AI 분석 중…" : "자료 기여하기"}</button>
+          <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, AI 검수 없이 즉시 공개되는 것에 동의합니다.</span></label>
+          <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? "업로드하고 있어요…" : "즉시 공개하기"}</button>
           {result && <div className={result.ok ? "submission-result success" : "submission-result error"}><strong>{result.ok ? "접수 완료" : "확인 필요"}</strong><p>{result.message}</p>{result.status && <span>현재 상태 · {result.status}</span>}</div>}
         </form>
       </div>
+    </main>
+  );
+}
+
+function AccountScreen({ user, assets: uploadedAssets, onBack, onOpen }: { user: AccountUser | null; assets: Asset[]; onBack: () => void; onOpen: (asset: Asset) => void }) {
+  const mine = user ? uploadedAssets.filter((asset) => asset.isMine) : [];
+  return (
+    <main className="account-main">
+      <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
+      <section className="account-hero">
+        <div className="account-avatar">{user?.displayName?.slice(0, 1).toUpperCase() || "?"}</div>
+        <div><p className="eyebrow">내 계정</p><h1>{user?.displayName || "로그인 정보 없음"}</h1><p>{user?.email || "배포된 사이트에서 ChatGPT 계정으로 로그인하면 계정이 연결됩니다."}</p></div>
+        {user && <a className="secondary-button" href="/signout-with-chatgpt?return_to=/">로그아웃</a>}
+      </section>
+      <section className="account-stats"><div><span>공개한 자료</span><strong>{mine.length}</strong></div><div><span>누적 조회</span><strong>{mine.reduce((sum, asset) => sum + asset.views, 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>
+      <section className="account-contributions"><div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>내가 올린 자료</h2></div></div>{mine.length ? <div className="result-list">{mine.map((asset, index) => <button className="result-card" type="button" key={asset.id} onClick={() => onOpen(asset)}><span className="file-number">{String(index + 1).padStart(2, "0")}</span><span className="file-copy"><span className="file-title">{asset.title}</span><span className="file-description">{asset.description}</span><span className="tag-row"><span className="tag accent">즉시 공개</span><span className="tag">조회 {asset.views}</span></span></span><span className="card-arrow">→</span></button>)}</div> : <div className="empty-state"><strong>아직 공개한 자료가 없습니다.</strong><span>자료 기여에서 첫 파일을 올려보세요.</span></div>}</section>
     </main>
   );
 }

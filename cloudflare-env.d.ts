@@ -6,6 +6,7 @@ interface D1PreparedStatement {
   bind(...values: unknown[]): D1PreparedStatement;
   run(): Promise<unknown>;
   all(): Promise<{ results: unknown[] }>;
+  first<T = Record<string, unknown>>(): Promise<T | null>;
 }
 
 interface D1Database {
@@ -22,6 +23,10 @@ interface R2Bucket {
       customMetadata?: Record<string, string>;
     },
   ): Promise<unknown>;
+  get(key: string): Promise<{
+    body: ReadableStream<Uint8Array>;
+    writeHttpMetadata(headers: Headers): void;
+  } | null>;
 }
 
 interface Fetcher {

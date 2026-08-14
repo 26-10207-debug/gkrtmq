@@ -12,7 +12,19 @@ export const contributions = sqliteTable("contributions", {
   aiModel: text("ai_model"),
   learningJson: text("learning_json"),
   errorMessage: text("error_message"),
+  ownerId: text("owner_id"),
+  ownerEmail: text("owner_email"),
+  ownerDisplayName: text("owner_display_name"),
+  viewCount: integer("view_count").notNull().default(0),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const users = sqliteTable("users", {
+  id: text("id").primaryKey(),
+  email: text("email").notNull(),
+  displayName: text("display_name").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
 export const learningProgress = sqliteTable("learning_progress", {

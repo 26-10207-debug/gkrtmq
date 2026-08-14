@@ -1,9 +1,10 @@
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
+import { getChatGPTUser } from "@/app/chatgpt-auth";
 
 export async function GET(request: Request) {
   await ensureSchema();
-  const learnerId = new URL(request.url).searchParams.get("learnerId")?.trim();
-  if (!learnerId) return Response.json({ progress: [] });
+  const user = await getChatGPTUser();
+  if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
 
   const { DB } = getRuntimeEnv();
   const result = await DB.prepare(`
@@ -12,20 +13,21 @@ export async function GET(request: Request) {
     FROM learning_progress
     WHERE learner_id = ?
     ORDER BY updated_at DESC
-  `).bind(learnerId).all();
+  `).bind(user.userId).all();
   return Response.json({ progress: result.results });
 }
 
 export async function POST(request: Request) {
   await ensureSchema();
+  const user = await getChatGPTUser();
+  if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
   const payload = (await request.json()) as {
-    learnerId?: string;
     assetId?: string;
     mode?: string;
     completedItems?: number;
     score?: number;
   };
-  if (!payload.learnerId || !payload.assetId || !payload.mode) {
+  if (!payload.assetId || !payload.mode) {
     return Response.json({ error: "학습 기록 정보가 부족합니다." }, { status: 400 });
   }
 
@@ -39,7 +41,7 @@ export async function POST(request: Request) {
       score = excluded.score,
       updated_at = CURRENT_TIMESTAMP
   `).bind(
-    payload.learnerId,
+    user.userId,
     payload.assetId,
     payload.mode,
     Math.max(0, Math.floor(payload.completedItems ?? 0)),
