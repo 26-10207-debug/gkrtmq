@@ -72,8 +72,15 @@ export async function POST(request: Request) {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
   const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${safeName}`;
   const bytes = await file.arrayBuffer();
-  const hasMechanicalTools = Object.values(mechanicalOptions).some(Boolean);
-  const initialStatus = publishMode === "instant" && mechanicalOptions.textOnly ? "mechanical_processing" : publishMode === "instant" ? "published" : "awaiting_ai";
+  const effectiveMechanicalOptions: MechanicalOptions = {
+    ...mechanicalOptions,
+    // AI 검수에는 원본 이미지·파일을 전달하지 않고, 항상 추출 텍스트만 전달한다.
+    ocr: mechanicalOptions.ocr || publishMode === "ai_review",
+  };
+  const hasMechanicalTools = Object.values(effectiveMechanicalOptions).some(Boolean);
+  const initialStatus = publishMode === "ai_review"
+    ? "ocr_processing"
+    : mechanicalOptions.textOnly ? "mechanical_processing" : "published";
 
   await runtime.UPLOADS.put(objectKey, bytes, {
     httpMetadata: { contentType: file.type },
@@ -91,16 +98,16 @@ export async function POST(request: Request) {
         (id, title, original_name, content_type, object_key, source_note, status,
          owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(mechanicalOptions), hasMechanicalTools ? "processing" : "none"),
+    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none"),
   ]);
 
   const mechanical = await processMechanically({
-    input: mechanicalOptions,
+    input: effectiveMechanicalOptions,
     bytes,
     contentType: file.type,
     filename: file.name,
-    ocrEndpoint: runtime.OCR_API_URL,
-    ocrApiKey: runtime.OCR_API_KEY,
+    azureEndpoint: runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT,
+    azureApiKey: runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY,
   });
   const mechanicalStatus = hasMechanicalTools ? mechanical.status : "none";
   const textOnly = mechanicalOptions.textOnly && mechanical.status === "completed";
@@ -150,6 +157,19 @@ export async function POST(request: Request) {
     }, { status: instantStatus === "published" ? 201 : 202 });
   }
 
+  if (mechanical.status !== "completed") {
+    const status = mechanical.status === "awaiting_ocr" ? "awaiting_ocr" : "review_failed";
+    const message = mechanical.status === "awaiting_ocr"
+      ? "Azure OCR 연결을 기다리고 있습니다. 원본 파일은 AI에 전달되지 않았습니다."
+      : `OCR 텍스트 추출에 실패해 AI 검수를 시작하지 않았습니다. ${mechanical.error || ""}`;
+    await runtime.DB.prepare("UPDATE contributions SET status = ?, error_message = ? WHERE id = ?")
+      .bind(status, message.slice(0, 500), id).run();
+    return Response.json({
+      contribution: { ...baseContribution, status, errorMessage: message },
+      message,
+    }, { status: 202 });
+  }
+
   if (!runtime.OPENAI_API_KEY) {
     return Response.json({
       contribution: { ...baseContribution, status: "awaiting_ai" },
@@ -161,9 +181,7 @@ export async function POST(request: Request) {
   try {
     const learningAsset = await structureContribution({
       apiKey: runtime.OPENAI_API_KEY,
-      bytes,
-      contentType: file.type,
-      filename: file.name,
+      extractedText: mechanical.text,
       title,
       sourceNote,
     });

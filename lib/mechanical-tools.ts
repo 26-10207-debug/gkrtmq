@@ -48,6 +48,20 @@ function readOcrText(payload: unknown): string | null {
   return null;
 }
 
+function azureEndpointUrl(endpoint: string) {
+  return `${endpoint.replace(/\/+$/, "")}/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30`;
+}
+
+function azureResultText(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const value = payload as Record<string, unknown>;
+  if (String(value.status ?? "").toLowerCase() !== "succeeded") return null;
+  const result = value.analyzeResult;
+  return result && typeof result === "object" && typeof (result as Record<string, unknown>).content === "string"
+    ? (result as Record<string, string>).content
+    : null;
+}
+
 export function splitQuestions(text: string): MechanicalQuestion[] {
   const blocks = normalizeText(text)
     .split(/(?=^\s*(?:문제\s*)?\d{1,3}[.)]\s+)/m)
@@ -81,23 +95,35 @@ export function makeRecallCards(text: string, questions: MechanicalQuestion[]): 
     }));
 }
 
-async function requestOcr(options: {
+async function waitForAzureResult(operationUrl: string, apiKey: string) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const response = await fetch(operationUrl, { headers: { "Ocp-Apim-Subscription-Key": apiKey } });
+    if (!response.ok) throw new Error(`Azure OCR 결과 확인에 실패했습니다. (${response.status})`);
+    const payload = await response.json();
+    const text = azureResultText(payload);
+    if (text?.trim()) return text;
+    const status = payload && typeof payload === "object" ? String((payload as Record<string, unknown>).status ?? "") : "";
+    if (["failed", "canceled"].includes(status.toLowerCase())) throw new Error("Azure OCR이 문서를 읽지 못했습니다.");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error("Azure OCR 처리 시간이 초과되었습니다. 잠시 후 다시 시도해 주세요.");
+}
+
+async function requestAzureOcr(options: {
   endpoint: string;
-  apiKey?: string;
+  apiKey: string;
   bytes: ArrayBuffer;
   contentType: string;
-  filename: string;
 }) {
-  const body = new FormData();
-  body.set("file", new Blob([options.bytes], { type: options.contentType }), options.filename);
-  const headers = new Headers({ Accept: "application/json" });
-  if (options.apiKey) headers.set("Authorization", `Bearer ${options.apiKey}`);
-
-  const response = await fetch(options.endpoint, { method: "POST", headers, body });
-  if (!response.ok) throw new Error(`OCR 요청 실패 (${response.status})`);
-  const text = readOcrText(await response.json());
-  if (!text?.trim()) throw new Error("OCR 응답에서 텍스트를 찾지 못했습니다.");
-  return text;
+  const response = await fetch(azureEndpointUrl(options.endpoint), {
+    method: "POST",
+    headers: { "Content-Type": options.contentType, "Ocp-Apim-Subscription-Key": options.apiKey },
+    body: options.bytes,
+  });
+  if (!response.ok) throw new Error(`Azure OCR 요청에 실패했습니다. (${response.status})`);
+  const operationUrl = response.headers.get("operation-location");
+  if (!operationUrl) throw new Error("Azure OCR 작업 주소를 받지 못했습니다.");
+  return waitForAzureResult(operationUrl, options.apiKey);
 }
 
 export async function processMechanically(options: {
@@ -105,8 +131,8 @@ export async function processMechanically(options: {
   bytes: ArrayBuffer;
   contentType: string;
   filename: string;
-  ocrEndpoint?: string;
-  ocrApiKey?: string;
+  azureEndpoint?: string;
+  azureApiKey?: string;
 }): Promise<MechanicalResult> {
   const needsText = options.input.ocr || options.input.textOnly || options.input.splitQuestions || options.input.createRecall;
   if (!needsText) return { status: "completed", text: "", questions: [], recallCards: [] };
@@ -115,22 +141,21 @@ export async function processMechanically(options: {
   if (options.contentType === "text/plain" || options.contentType === "text/markdown") {
     text = new TextDecoder("utf-8", { fatal: false }).decode(options.bytes);
   } else if (options.input.ocr) {
-    if (!options.ocrEndpoint) {
+    if (!options.azureEndpoint || !options.azureApiKey) {
       return {
         status: "awaiting_ocr",
         text: "",
         questions: [],
         recallCards: [],
-        error: "OCR 연결 정보가 아직 설정되지 않았습니다.",
+        error: "Azure Document Intelligence 연결 정보가 아직 설정되지 않았습니다.",
       };
     }
     try {
-      text = await requestOcr({
-        endpoint: options.ocrEndpoint,
-        apiKey: options.ocrApiKey,
+      text = await requestAzureOcr({
+        endpoint: options.azureEndpoint,
+        apiKey: options.azureApiKey,
         bytes: options.bytes,
         contentType: options.contentType,
-        filename: options.filename,
       });
     } catch (error) {
       return {

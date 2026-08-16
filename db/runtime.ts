@@ -4,8 +4,8 @@ export type RuntimeEnv = {
   DB: D1Database;
   UPLOADS: R2Bucket;
   OPENAI_API_KEY?: string;
-  OCR_API_URL?: string;
-  OCR_API_KEY?: string;
+  AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT?: string;
+  AZURE_DOCUMENT_INTELLIGENCE_KEY?: string;
 };
 
 export function getRuntimeEnv(): RuntimeEnv {
