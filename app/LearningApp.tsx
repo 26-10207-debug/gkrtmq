@@ -22,6 +22,12 @@ type Asset = {
   createdAt?: string;
   isUpload?: boolean;
   isMine?: boolean;
+  mechanicalStatus?: string;
+  extractedTextPreview?: string | null;
+  questionsJson?: string | null;
+  recallJson?: string | null;
+  textOnly?: boolean;
+  mechanicalError?: string | null;
 };
 
 type AccountUser = { displayName: string; email: string };
@@ -38,6 +44,12 @@ type ContributionRecord = {
   publishMode?: "instant" | "ai_review";
   creditsAwarded?: number;
   errorMessage?: string | null;
+  mechanicalStatus?: string;
+  extractedTextPreview?: string | null;
+  questionsJson?: string | null;
+  recallJson?: string | null;
+  textOnly?: number;
+  mechanicalError?: string | null;
   isMine?: number;
 };
 
@@ -53,12 +65,18 @@ function contributionToAsset(item: ContributionRecord): Asset {
     views: item.viewCount,
     examples: 0,
     questions: 0,
-    fileUrl: `/api/files?id=${encodeURIComponent(item.id)}`,
+    fileUrl: item.textOnly ? undefined : `/api/files?id=${encodeURIComponent(item.id)}`,
     sourceNote: item.sourceNote,
     ownerName: item.ownerDisplayName,
     createdAt: item.createdAt,
     isUpload: true,
     isMine: item.isMine === 1,
+    mechanicalStatus: item.mechanicalStatus,
+    extractedTextPreview: item.extractedTextPreview,
+    questionsJson: item.questionsJson,
+    recallJson: item.recallJson,
+    textOnly: item.textOnly === 1,
+    mechanicalError: item.mechanicalError,
   };
 }
 
@@ -395,13 +413,14 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
             <div className="tag-row"><span className="tag accent">{props.asset.tags[0]}</span><span className="tag">기여자 {props.asset.ownerName || "사용자"}</span><span className="tag">{props.asset.createdAt ? new Date(props.asset.createdAt).toLocaleDateString("ko-KR") : "방금 공개"}</span></div>
           </div>
           <div className="uploaded-file-card">
-            <span>원본 학습 자료</span>
-            <strong>{props.asset.tags[1]}</strong>
-            <p>업로더가 공개한 원본입니다. 정확성과 저작권 여부를 직접 확인해 주세요.</p>
-            <a className="primary-button" href={props.asset.fileUrl} target="_blank" rel="noreferrer">파일 열기</a>
+            <span>{props.asset.textOnly ? "텍스트 기반 학습 자료" : "원본 학습 자료"}</span>
+            <strong>{props.asset.textOnly ? "텍스트만 공개" : props.asset.tags[1]}</strong>
+            <p>{props.asset.textOnly ? "원본 파일은 열리지 않으며, 추출한 텍스트와 기계적 학습 도구만 제공합니다." : "업로더가 공개한 원본입니다. 정확성과 저작권 여부를 직접 확인해 주세요."}</p>
+            {props.asset.fileUrl && <a className="primary-button" href={props.asset.fileUrl} target="_blank" rel="noreferrer">파일 열기</a>}
           </div>
         </section>
         <section className="upload-notice"><strong>공개 방식</strong><p>{props.asset.tags[0] === "AI 검수 완료" ? "AI가 학습 구조와 품질 기준을 확인한 뒤 공개된 자료입니다. 기여자에게 검수 공개 보상 크레딧이 지급되었습니다." : "기여자가 AI 검수 없이 즉시 공개한 원본 자료입니다. 이 방식에는 기여 보상 크레딧이 지급되지 않습니다."}</p></section>
+        {(props.asset.mechanicalStatus && props.asset.mechanicalStatus !== "none") && <MechanicalToolsPanel asset={props.asset} />}
       </main>
     );
   }
@@ -453,6 +472,29 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
       </section>
     </main>
   );
+}
+
+type ProcessedContribution = {
+  mechanicalStatus: string;
+  extractedText: string | null;
+  questions: Array<{ number: number; prompt: string }>;
+  recallCards: Array<{ prompt: string; answer: string; source: string }>;
+  mechanicalError: string | null;
+};
+
+function MechanicalToolsPanel({ asset }: { asset: Asset }) {
+  const [processed, setProcessed] = useState<ProcessedContribution | null>(null);
+  const [tab, setTab] = useState<"text" | "questions" | "recall">("text");
+  useEffect(() => {
+    let active = true;
+    fetch(`/api/processed?id=${encodeURIComponent(asset.id)}`).then((response) => response.json()).then((data: ProcessedContribution) => { if (active) setProcessed(data); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [asset.id]);
+
+  if (!processed) return <section className="mechanical-result"><strong>기계적 처리 결과를 불러오는 중…</strong></section>;
+  if (processed.mechanicalStatus === "awaiting_ocr") return <section className="mechanical-result pending"><strong>OCR 연결 대기</strong><p>{processed.mechanicalError || "외부 OCR 연결이 설정되면 글자 인식 후 텍스트와 학습 도구가 생성됩니다."}</p></section>;
+  if (processed.mechanicalStatus === "failed") return <section className="mechanical-result error"><strong>기계적 처리 실패</strong><p>{processed.mechanicalError || "처리할 수 있는 텍스트가 없습니다."}</p></section>;
+  return <section className="mechanical-result"><div className="mechanical-heading"><div><p className="eyebrow">기계적 학습 도구</p><h2>텍스트에서 바로 만든 학습 재료</h2></div><span>AI 생성 없음</span></div><div className="mechanical-tabs"><button className={tab === "text" ? "active" : ""} type="button" onClick={() => setTab("text")}>추출 텍스트</button><button className={tab === "questions" ? "active" : ""} type="button" onClick={() => setTab("questions")}>문제 {processed.questions.length}</button><button className={tab === "recall" ? "active" : ""} type="button" onClick={() => setTab("recall")}>능동 회상 {processed.recallCards.length}</button></div>{tab === "text" && <pre className="extracted-text">{processed.extractedText || "추출된 텍스트가 없습니다."}</pre>}{tab === "questions" && <ol className="question-split-list">{processed.questions.length ? processed.questions.map((question) => <li key={question.number}><strong>문제 {question.number}</strong><p>{question.prompt}</p></li>) : <li>번호가 있는 문제를 찾지 못했습니다.</li>}</ol>}{tab === "recall" && <div className="recall-card-list">{processed.recallCards.length ? processed.recallCards.map((card, index) => <details key={`${card.prompt}-${index}`}><summary>{card.prompt}</summary><p>{card.answer}</p></details>) : <p>능동 회상 카드를 만들 수 있는 텍스트가 부족합니다.</p>}</div>}</section>;
 }
 
 function StudyScreen(props: {
@@ -584,6 +626,10 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
   const [title, setTitle] = useState("");
   const [sourceNote, setSourceNote] = useState("");
   const [publishMode, setPublishMode] = useState<"instant" | "ai_review">("instant");
+  const [ocr, setOcr] = useState(false);
+  const [textOnly, setTextOnly] = useState(false);
+  const [splitQuestionSet, setSplitQuestionSet] = useState(false);
+  const [createRecall, setCreateRecall] = useState(false);
   const [licenseConfirmed, setLicenseConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; status?: string } | null>(null);
@@ -598,6 +644,10 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
     body.set("title", title);
     body.set("sourceNote", sourceNote);
     body.set("publishMode", publishMode);
+    body.set("ocr", String(ocr));
+    body.set("textOnly", String(textOnly));
+    body.set("splitQuestions", String(splitQuestionSet));
+    body.set("createRecall", String(createRecall));
     body.set("licenseConfirmed", String(licenseConfirmed));
     try {
       const response = await fetch("/api/contributions", { method: "POST", body });
@@ -620,6 +670,7 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
           <fieldset className="publish-mode-field"><legend>공개 방식</legend><div><button className={publishMode === "instant" ? "publish-option active" : "publish-option"} type="button" onClick={() => { setPublishMode("instant"); setResult(null); }}><span>즉시 공개</span><strong>0 크레딧</strong><small>AI 검수 없이 바로 공개</small></button><button className={publishMode === "ai_review" ? "publish-option reward active" : "publish-option reward"} type="button" onClick={() => { setPublishMode("ai_review"); setResult(null); }}><span>AI 검수 공개</span><strong>+20 크레딧</strong><small>통과한 자료만 공개</small></button></div></fieldset>
           <label><span>자료 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 돌림힘 수업 필기와 예시" required /></label>
           <label className="upload-field"><span>파일</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.docx,.pptx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><div><strong>{file ? file.name : "파일을 선택하세요"}</strong><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)}MB` : "PDF, 이미지, 문서 · 최대 8MB"}</small></div></label>
+          <fieldset className="mechanical-tools"><legend>기계적 처리 도구 <small>AI 검수와 별도로 작동</small></legend><p>텍스트 파일은 바로 처리되고, 이미지·PDF는 OCR을 선택하면 외부 OCR 연결로 글자를 추출합니다.</p><label><input type="checkbox" checked={ocr} onChange={(event) => setOcr(event.target.checked)} /> 이미지·PDF 글자 인식(OCR)</label><label><input type="checkbox" checked={textOnly} onChange={(event) => setTextOnly(event.target.checked)} /> 원본 대신 텍스트만 학습 DB에 공개</label><label><input type="checkbox" checked={splitQuestionSet} onChange={(event) => setSplitQuestionSet(event.target.checked)} /> 번호가 있는 문제를 문제별로 나누기</label><label><input type="checkbox" checked={createRecall} onChange={(event) => setCreateRecall(event.target.checked)} /> 규칙 기반 능동 회상 카드 만들기</label></fieldset>
           <label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} placeholder="자료의 출처와 어떤 학습에 도움이 되는지 적어주세요." rows={5} /></label>
           <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, {publishMode === "instant" ? "검수 없이 즉시 공개되고 크레딧이 지급되지 않는 것" : "AI가 자료를 분석하며 통과한 경우에만 공개·보상되는 것"}에 동의합니다.</span></label>
           <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? (publishMode === "instant" ? "공개하고 있어요…" : "AI 검수를 진행하고 있어요…") : (publishMode === "instant" ? "즉시 공개하기 · 0 크레딧" : "AI 검수 요청하기 · 통과 시 +20")}</button>

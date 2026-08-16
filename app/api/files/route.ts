@@ -11,11 +11,13 @@ export async function GET(request: Request) {
 
   const { DB, UPLOADS } = getRuntimeEnv();
   const row = await DB.prepare(`
-    SELECT object_key AS objectKey, original_name AS originalName, content_type AS contentType
+    SELECT object_key AS objectKey, original_name AS originalName, content_type AS contentType,
+           text_only AS textOnly
     FROM contributions
     WHERE id = ? AND status IN ('published', 'published_ai')
-  `).bind(id).first<{ objectKey: string; originalName: string; contentType: string }>();
+  `).bind(id).first<{ objectKey: string; originalName: string; contentType: string; textOnly: number }>();
   if (!row) return Response.json({ error: "자료를 찾을 수 없습니다." }, { status: 404 });
+  if (row.textOnly) return Response.json({ error: "이 자료는 텍스트 전용으로 보관됩니다." }, { status: 404 });
 
   const object = await UPLOADS.get(row.objectKey);
   if (!object) return Response.json({ error: "저장된 파일을 찾을 수 없습니다." }, { status: 404 });

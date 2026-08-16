@@ -269,6 +269,24 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .uploaded-file-card > strong { margin-top: 8px; font-size: 24px; }
 .uploaded-file-card p, .upload-notice p { color: var(--muted); line-height: 1.7; }
 .uploaded-file-card a { text-decoration: none; }
+.mechanical-result { margin-top: 30px; padding: 30px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
+.mechanical-result.pending { border-color: #e5bb5e; background: #fff8e8; }
+.mechanical-result.error { border-color: #eab3aa; background: #fff2ef; color: var(--red); }
+.mechanical-result > p { color: var(--muted); line-height: 1.7; }
+.mechanical-heading { display: flex; justify-content: space-between; gap: 20px; align-items: start; }
+.mechanical-heading h2 { margin: 0; font-family: Georgia, "Noto Serif KR", serif; font-size: 28px; font-weight: 500; }
+.mechanical-heading > span { padding: 7px 10px; border-radius: 8px; background: var(--green-soft); color: var(--green-dark); font-size: 12px; font-weight: 800; }
+.mechanical-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 24px 0; }
+.mechanical-tabs button { min-height: 38px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); cursor: pointer; }
+.mechanical-tabs button.active { border-color: var(--green); background: var(--green-soft); color: var(--green-dark); font-weight: 800; }
+.extracted-text { max-height: 460px; overflow: auto; margin: 0; padding: 18px; border-radius: 12px; background: var(--page); color: var(--text); font: 14px/1.75 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.question-split-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.question-split-list li { padding: 17px; border: 1px solid var(--line); border-radius: 12px; }
+.question-split-list p { margin: 7px 0 0; color: var(--muted); line-height: 1.65; }
+.recall-card-list { display: grid; gap: 10px; }
+.recall-card-list details { padding: 15px 17px; border: 1px solid var(--line); border-radius: 12px; background: var(--page); }
+.recall-card-list summary { cursor: pointer; font-weight: 800; }
+.recall-card-list p { margin: 13px 0 0; color: var(--muted); line-height: 1.7; }
 .upload-notice { margin-top: 32px; padding: 24px; border-left: 4px solid var(--amber); border-radius: 0 14px 14px 0; background: #fff8e8; }
 .upload-notice p { margin: 7px 0 0; }
 .contribution-grid { display: grid; grid-template-columns: .9fr 1.1fr; gap: 70px; padding-top: 46px; }
@@ -288,6 +306,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .publish-option > strong { font-size: 20px; }
 .publish-option.reward > strong { color: var(--green); }
 .publish-option small { color: var(--muted); line-height: 1.45; }
+.mechanical-tools { display: grid; gap: 10px; margin: 0; padding: 18px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface-soft); }
+.mechanical-tools legend { padding: 0 4px; font-size: 13px; font-weight: 800; }
+.mechanical-tools legend small { color: var(--muted); font-weight: 500; }
+.mechanical-tools > p { margin: 0 0 3px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.mechanical-tools label { display: grid; grid-template-columns: 18px 1fr; gap: 9px; align-items: start; color: var(--text); font-size: 13px; line-height: 1.45; cursor: pointer; }
+.mechanical-tools input { width: 16px !important; height: 16px; margin: 1px 0 0; padding: 0; accent-color: var(--green); }
 .contribution-form > label:not(.check-row) { display: grid; gap: 9px; }
 .upload-field > input { position: absolute; width: 1px !important; height: 1px; opacity: 0; pointer-events: none; }
 .upload-field > div { display: grid; place-items: center; min-height: 130px; padding: 20px; border: 1.5px dashed #aab8ae; border-radius: 13px; background: var(--page); cursor: pointer; text-align: center; }
@@ -382,6 +406,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .publish-mode-field > div, .fake-payment-fields, .payment-methods { grid-template-columns: 1fr; }
   .demo-banner { align-items: flex-start; flex-direction: column; text-align: left; }
   .credit-shop { padding: 28px 18px; }
+  .mechanical-result { padding: 22px 18px; }
+  .mechanical-heading { align-items: stretch; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {

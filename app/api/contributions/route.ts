@@ -1,6 +1,7 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { structureContribution } from "@/lib/learning-ai";
+import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const REVIEW_REWARD = 20;
@@ -20,6 +21,10 @@ const contributionSelect = `
          source_note AS sourceNote, status, owner_display_name AS ownerDisplayName,
          view_count AS viewCount, publish_mode AS publishMode,
          credits_awarded AS creditsAwarded, error_message AS errorMessage,
+         mechanical_options AS mechanicalOptions, mechanical_status AS mechanicalStatus,
+         substr(extracted_text, 1, 1200) AS extractedTextPreview,
+         questions_json AS questionsJson, recall_json AS recallJson,
+         text_only AS textOnly, mechanical_error AS mechanicalError,
          created_at AS createdAt`;
 
 export async function GET(request: Request) {
@@ -50,6 +55,12 @@ export async function POST(request: Request) {
   const sourceNote = String(form.get("sourceNote") ?? "").trim();
   const licenseConfirmed = form.get("licenseConfirmed") === "true";
   const publishMode = form.get("publishMode") === "ai_review" ? "ai_review" : "instant";
+  const mechanicalOptions: MechanicalOptions = {
+    ocr: form.get("ocr") === "true",
+    textOnly: form.get("textOnly") === "true",
+    splitQuestions: form.get("splitQuestions") === "true",
+    createRecall: form.get("createRecall") === "true",
+  };
 
   if (!(file instanceof File) || !title) return Response.json({ error: "제목과 파일이 필요합니다." }, { status: 400 });
   if (!licenseConfirmed) return Response.json({ error: "기여 권한과 선택한 공개 방식에 동의해야 합니다." }, { status: 400 });
@@ -61,7 +72,8 @@ export async function POST(request: Request) {
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
   const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${safeName}`;
   const bytes = await file.arrayBuffer();
-  const initialStatus = publishMode === "instant" ? "published" : "awaiting_ai";
+  const hasMechanicalTools = Object.values(mechanicalOptions).some(Boolean);
+  const initialStatus = publishMode === "instant" && mechanicalOptions.textOnly ? "mechanical_processing" : publishMode === "instant" ? "published" : "awaiting_ai";
 
   await runtime.UPLOADS.put(objectKey, bytes, {
     httpMetadata: { contentType: file.type },
@@ -77,22 +89,65 @@ export async function POST(request: Request) {
     runtime.DB.prepare(`
       INSERT INTO contributions
         (id, title, original_name, content_type, object_key, source_note, status,
-         owner_id, owner_email, owner_display_name, publish_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode),
+         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(mechanicalOptions), hasMechanicalTools ? "processing" : "none"),
   ]);
+
+  const mechanical = await processMechanically({
+    input: mechanicalOptions,
+    bytes,
+    contentType: file.type,
+    filename: file.name,
+    ocrEndpoint: runtime.OCR_API_URL,
+    ocrApiKey: runtime.OCR_API_KEY,
+  });
+  const mechanicalStatus = hasMechanicalTools ? mechanical.status : "none";
+  const textOnly = mechanicalOptions.textOnly && mechanical.status === "completed";
+  const instantStatus = publishMode === "instant"
+    ? mechanicalOptions.textOnly
+      ? mechanical.status === "completed" ? "published" : mechanical.status === "awaiting_ocr" ? "awaiting_ocr" : "mechanical_failed"
+      : "published"
+    : initialStatus;
+
+  await runtime.DB.prepare(`
+    UPDATE contributions
+    SET status = ?, mechanical_status = ?, extracted_text = ?, questions_json = ?, recall_json = ?,
+        text_only = ?, mechanical_error = ?
+    WHERE id = ?
+  `).bind(
+    instantStatus,
+    mechanicalStatus,
+    mechanical.text || null,
+    mechanical.questions.length ? JSON.stringify(mechanical.questions) : null,
+    mechanical.recallCards.length ? JSON.stringify(mechanical.recallCards) : null,
+    textOnly ? 1 : 0,
+    mechanical.error?.slice(0, 500) ?? null,
+    id,
+  ).run();
 
   const baseContribution = {
     id, title, originalName: file.name, contentType: file.type, sourceNote,
     ownerDisplayName: user.displayName, viewCount: 0, publishMode,
     creditsAwarded: 0, createdAt: new Date().toISOString(), isMine: 1,
+    mechanicalStatus, extractedTextPreview: mechanical.text.slice(0, 1200),
+    questionsJson: mechanical.questions.length ? JSON.stringify(mechanical.questions) : null,
+    recallJson: mechanical.recallCards.length ? JSON.stringify(mechanical.recallCards) : null,
+    textOnly: textOnly ? 1 : 0, mechanicalError: mechanical.error ?? null,
   };
 
   if (publishMode === "instant") {
+    const message = instantStatus === "published"
+      ? textOnly
+        ? "원본을 공개하지 않고 텍스트 기반 학습 자료로 저장했습니다."
+        : "자료가 즉시 공개되었습니다. 즉시 공개 자료에는 크레딧이 지급되지 않습니다."
+      : mechanical.status === "awaiting_ocr"
+        ? "텍스트 전용 저장을 위해 OCR 대기열에 보관했습니다. OCR 연결 후 텍스트만 공개됩니다."
+        : `기계적 처리에 실패해 자료를 비공개로 보관했습니다. ${mechanical.error || ""}`;
     return Response.json({
-      contribution: { ...baseContribution, status: "published" },
-      message: "자료가 즉시 공개되었습니다. 즉시 공개 자료에는 크레딧이 지급되지 않습니다.",
-    }, { status: 201 });
+      contribution: { ...baseContribution, status: instantStatus },
+      message,
+    }, { status: instantStatus === "published" ? 201 : 202 });
   }
 
   if (!runtime.OPENAI_API_KEY) {

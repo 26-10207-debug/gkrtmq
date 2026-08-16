@@ -4,6 +4,8 @@ export type RuntimeEnv = {
   DB: D1Database;
   UPLOADS: R2Bucket;
   OPENAI_API_KEY?: string;
+  OCR_API_URL?: string;
+  OCR_API_KEY?: string;
 };
 
 export function getRuntimeEnv(): RuntimeEnv {
@@ -37,6 +39,13 @@ export function ensureSchema() {
           publish_mode TEXT NOT NULL DEFAULT 'instant',
           credits_awarded INTEGER NOT NULL DEFAULT 0,
           reviewed_at TEXT,
+          mechanical_options TEXT NOT NULL DEFAULT '{}',
+          mechanical_status TEXT NOT NULL DEFAULT 'none',
+          extracted_text TEXT,
+          questions_json TEXT,
+          recall_json TEXT,
+          text_only INTEGER NOT NULL DEFAULT 0,
+          mechanical_error TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `),
@@ -86,6 +95,13 @@ export function ensureSchema() {
     if (!columns.has("publish_mode")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN publish_mode TEXT NOT NULL DEFAULT 'instant'"));
     if (!columns.has("credits_awarded")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN credits_awarded INTEGER NOT NULL DEFAULT 0"));
     if (!columns.has("reviewed_at")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN reviewed_at TEXT"));
+    if (!columns.has("mechanical_options")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_options TEXT NOT NULL DEFAULT '{}'"));
+    if (!columns.has("mechanical_status")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_status TEXT NOT NULL DEFAULT 'none'"));
+    if (!columns.has("extracted_text")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN extracted_text TEXT"));
+    if (!columns.has("questions_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN questions_json TEXT"));
+    if (!columns.has("recall_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN recall_json TEXT"));
+    if (!columns.has("text_only")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0"));
+    if (!columns.has("mechanical_error")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_error TEXT"));
     if (additions.length) await DB.batch(additions);
 
     const userColumnResult = await DB.prepare("PRAGMA table_info(users)").all();

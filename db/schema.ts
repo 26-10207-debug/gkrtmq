@@ -19,6 +19,13 @@ export const contributions = sqliteTable("contributions", {
   publishMode: text("publish_mode").notNull().default("instant"),
   creditsAwarded: integer("credits_awarded").notNull().default(0),
   reviewedAt: text("reviewed_at"),
+  mechanicalOptions: text("mechanical_options").notNull().default("{}"),
+  mechanicalStatus: text("mechanical_status").notNull().default("none"),
+  extractedText: text("extracted_text"),
+  questionsJson: text("questions_json"),
+  recallJson: text("recall_json"),
+  textOnly: integer("text_only", { mode: "boolean" }).notNull().default(false),
+  mechanicalError: text("mechanical_error"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 
