@@ -684,7 +684,7 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
 type AccountData = {
   creditBalance: number;
   stats: { contributionCount: number; totalViews: number };
-  contributions: Array<{ id: string; title: string; status: string; publishMode: string; creditsAwarded: number; viewCount: number; errorMessage?: string | null; createdAt: string }>;
+  contributions: Array<{ id: string; title: string; originalName: string; sourceNote: string; status: string; publishMode: string; creditsAwarded: number; viewCount: number; errorMessage?: string | null; createdAt: string }>;
   ledger: Array<{ id: number; amount: number; reason: string; contributionId?: string | null; createdAt: string }>;
 };
 
@@ -717,11 +717,17 @@ function AccountScreen({ user, onBack, onPricing }: { user: AccountUser | null; 
       <section className="account-stats"><div><span>공개한 자료</span><strong>{data?.stats.contributionCount ?? 0}</strong></div><div><span>누적 조회</span><strong>{(data?.stats.totalViews ?? 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>
       <section className="account-contributions">
         <div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>검수·공개 현황</h2></div></div>
-        {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <article key={item.id}><div><strong>{item.title}</strong><span>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</span></div><div className="record-meta"><span className={`status-pill ${item.status}`}>{statusLabels[item.status] || item.status}</span><span>{item.publishMode === "ai_review" ? "AI 검수 공개" : "즉시 공개"}</span><b>{item.creditsAwarded > 0 ? `+${item.creditsAwarded} C` : "보상 없음"}</b></div>{item.errorMessage && <p>{item.errorMessage}</p>}</article>)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
+        {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <ContributionEditor key={item.id} item={item} />)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
       </section>
       <section className="credit-history"><div className="section-heading"><div><p className="eyebrow">크레딧</p><h2>지급 내역</h2></div></div>{data?.ledger.length ? <div>{data.ledger.map((entry) => <article key={entry.id}><div><strong>{entry.reason}</strong><span>{new Date(entry.createdAt).toLocaleDateString("ko-KR")}</span></div><b>+{entry.amount} C</b></article>)}</div> : <div className="empty-state compact-empty"><strong>아직 크레딧 내역이 없습니다.</strong><span>AI 검수를 통과한 자료가 공개되면 여기에 기록됩니다.</span></div>}</section>
     </main>
   );
+}
+
+function ContributionEditor({ item }: { item: AccountData["contributions"][number] }) {
+  const [editing, setEditing] = useState(false); const [title, setTitle] = useState(item.title); const [sourceNote, setSourceNote] = useState(item.sourceNote || ""); const [saving, setSaving] = useState(false);
+  async function save(event: FormEvent) { event.preventDefault(); setSaving(true); const response = await fetch("/api/contributions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: item.id, title, sourceNote }) }); if (response.ok) setEditing(false); setSaving(false); }
+  return <article><div><strong>{title}</strong><span>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</span></div><div className="record-meta"><span className={`status-pill ${item.status}`}>{statusLabels[item.status] || item.status}</span><span>{item.publishMode === "ai_review" ? "AI 검수 공개" : "즉시 공개"}</span><b>{item.creditsAwarded > 0 ? `+${item.creditsAwarded} C` : "보상 없음"}</b></div>{!editing ? <button className="record-edit-button" type="button" onClick={() => setEditing(true)}>자료 정보 수정</button> : <form className="record-edit-form" onSubmit={save}><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} required /><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} maxLength={2000} rows={3} /><button className="primary-button" disabled={saving}>{saving ? "저장 중…" : "저장"}</button></form>}</article>;
 }
 
 function PricingScreen({ onBack }: { onBack: () => void }) {

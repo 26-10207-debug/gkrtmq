@@ -228,3 +228,24 @@ export async function POST(request: Request) {
     }, { status: 202 });
   }
 }
+
+export async function PATCH(request: Request) {
+  await ensureSchema();
+  const user = await getChatGPTUser();
+  if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
+  const body = await request.json() as { id?: unknown; title?: unknown; sourceNote?: unknown };
+  const id = String(body.id ?? "").trim();
+  const title = String(body.title ?? "").trim();
+  const sourceNote = String(body.sourceNote ?? "").trim();
+  if (!id || !title) return Response.json({ error: "자료 ID와 제목이 필요합니다." }, { status: 400 });
+  if (title.length > 160 || sourceNote.length > 2000) return Response.json({ error: "제목 또는 설명이 너무 깁니다." }, { status: 400 });
+  const { DB } = getRuntimeEnv();
+  const owned = await DB.prepare("SELECT id FROM contributions WHERE id = ? AND owner_id = ?")
+    .bind(id, user.userId).first<{ id: string }>();
+  if (!owned) return Response.json({ error: "수정할 권한이 없거나 자료를 찾지 못했습니다." }, { status: 404 });
+  await DB.prepare("UPDATE contributions SET title = ?, source_note = ? WHERE id = ? AND owner_id = ?")
+    .bind(title, sourceNote, id, user.userId).run();
+  const contribution = await DB.prepare(`${contributionSelect}, CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine FROM contributions WHERE id = ?`)
+    .bind(user.userId, id).first();
+  return Response.json({ contribution, message: "자료 정보가 저장되었습니다." });
+}
