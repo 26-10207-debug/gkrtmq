@@ -268,6 +268,17 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .auth-heading h2 { margin: 0; font-family: Georgia, "Noto Serif KR", serif; font-size: 34px; font-weight: 500; }
 .auth-heading > p:last-child { color: var(--muted); line-height: 1.7; }
 .auth-panel .primary-button { margin-top: 24px; text-decoration: none; }
+.auth-options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 24px; }
+.auth-options > * { display: grid; min-height: 48px; place-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; font-weight: 800; text-align: center; text-decoration: none; }
+.auth-options .primary-button { margin: 0; border-color: var(--green); background: var(--green); color: white; }
+.auth-options button:disabled { cursor: not-allowed; opacity: .62; }
+.auth-help { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.search-result { display: grid; gap: 8px; }
+.search-edit { display: grid; gap: 10px; margin: -2px 18px 6px 76px; padding: 0 0 14px; }
+.search-edit .record-edit-form { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
+.camera-field { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); font-size: 13px; font-weight: 800; }
+.camera-field input { font: inherit; font-size: 13px; }
+.camera-field small { color: var(--muted); font-weight: 500; line-height: 1.5; }
 .credit-history { margin-top: 54px; }
 .credit-history > div:last-child { display: grid; gap: 8px; }
 .credit-history article { padding: 16px 4px; border-bottom: 1px solid var(--line); }
@@ -419,6 +430,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .credit-shop { padding: 28px 18px; }
   .mechanical-result { padding: 22px 18px; }
   .mechanical-heading { align-items: stretch; flex-direction: column; }
+  .auth-options { grid-template-columns: 1fr; }
+  .search-edit { margin-left: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

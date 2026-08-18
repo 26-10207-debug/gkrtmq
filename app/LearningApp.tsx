@@ -19,6 +19,7 @@ type Asset = {
   questions: number;
   fileUrl?: string;
   sourceNote?: string;
+  originalName?: string;
   ownerName?: string;
   createdAt?: string;
   isUpload?: boolean;
@@ -68,6 +69,7 @@ function contributionToAsset(item: ContributionRecord): Asset {
     questions: 0,
     fileUrl: item.textOnly ? undefined : `/api/files?id=${encodeURIComponent(item.id)}`,
     sourceNote: item.sourceNote,
+    originalName: item.originalName,
     ownerName: item.ownerDisplayName,
     createdAt: item.createdAt,
     isUpload: true,
@@ -294,6 +296,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onFilter={setFilter}
           onQuery={setQuery}
           onOpen={openAsset}
+          onUpdated={updatePublishedContribution}
         />
       )}
       {view === "detail" && <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} />}
@@ -358,6 +361,7 @@ function SearchScreen(props: {
   onFilter: (value: string) => void;
   onQuery: (value: string) => void;
   onOpen: (asset: Asset) => void;
+  onUpdated: (item: ContributionRecord) => void;
 }) {
   const filters = ["전체", "사용자 자료", "개념 설명", "예시·적용", "회상 문제", "오개념"];
   return (
@@ -389,7 +393,8 @@ function SearchScreen(props: {
         </div>
         <div className="result-list">
           {props.assets.map((asset, index) => (
-            <button className="result-card" type="button" key={asset.id} onClick={() => props.onOpen(asset)}>
+            <div className="search-result" key={asset.id}>
+            <button className="result-card" type="button" onClick={() => props.onOpen(asset)}>
               <span className="file-number">{String(index + 1).padStart(2, "0")}</span>
               <span className="file-copy">
                 <span className="file-title">{asset.title}</span>
@@ -399,12 +404,45 @@ function SearchScreen(props: {
               <span className="file-metrics"><strong>★ {asset.rating}</strong><span>평가 {asset.reviews}</span><span>조회 {formatViews(asset.views)}</span></span>
               <span className="card-arrow" aria-hidden="true">→</span>
             </button>
+            {asset.isMine && asset.isUpload && <SearchContributionEditor asset={asset} onSaved={props.onUpdated} />}
+            </div>
           ))}
           {!props.assets.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
         </div>
       </main>
     </div>
   );
+}
+
+function SearchContributionEditor({ asset, onSaved }: { asset: Asset; onSaved: (item: ContributionRecord) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(asset.title);
+  const [sourceNote, setSourceNote] = useState(asset.sourceNote || "");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/contributions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: asset.id, title, sourceNote }) });
+      const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord };
+      if (!response.ok || !data.contribution) {
+        setMessage(data.error || "자료를 저장하지 못했습니다.");
+        return;
+      }
+      onSaved(data.contribution);
+      setMessage(data.message || "자료 정보가 저장되었습니다.");
+      setEditing(false);
+    } catch {
+      setMessage("저장 중 연결 문제가 발생했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="search-edit"><button className="record-edit-button" type="button" onClick={() => { setEditing(!editing); setMessage(null); }}>{editing ? "수정 닫기" : "내 자료 수정"}</button>{editing && <form className="record-edit-form" onSubmit={save}><label><span>제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} required /></label><label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} maxLength={2000} rows={3} /></label><div><button className="primary-button compact" type="submit" disabled={saving}>{saving ? "저장 중…" : "저장"}</button><button className="secondary-button" type="button" onClick={() => { setEditing(false); setTitle(asset.title); setSourceNote(asset.sourceNote || ""); }}>취소</button></div></form>}{message && <p className="record-message">{message}</p>}</div>;
 }
 
 function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void }) {
@@ -677,6 +715,7 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
           <fieldset className="publish-mode-field"><legend>공개 방식</legend><div><button className={publishMode === "instant" ? "publish-option active" : "publish-option"} type="button" onClick={() => { setPublishMode("instant"); setResult(null); }}><span>즉시 공개</span><strong>0 크레딧</strong><small>AI 검수 없이 바로 공개</small></button><button className={publishMode === "ai_review" ? "publish-option reward active" : "publish-option reward"} type="button" onClick={() => { setPublishMode("ai_review"); setResult(null); }}><span>AI 검수 공개</span><strong>+20 크레딧</strong><small>통과한 자료만 공개</small></button></div></fieldset>
           <label><span>자료 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 돌림힘 수업 필기와 예시" required /></label>
           <label className="upload-field"><span>파일</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.docx,.pptx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><div><strong>{file ? file.name : "파일을 선택하세요"}</strong><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)}MB` : "PDF, 이미지, 문서 · 최대 8MB"}</small></div></label>
+          <label className="camera-field"><span>또는 사진 촬영</span><input type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><small>휴대폰에서는 카메라 권한을 요청해 바로 촬영할 수 있습니다. 촬영한 사진도 위 파일로 선택됩니다.</small></label>
           <fieldset className="mechanical-tools"><legend>기계적 처리 도구 <small>AI 검수와 별도로 작동</small></legend><p>텍스트 파일은 바로 처리되고, 이미지·PDF는 Azure OCR로 한국어 텍스트를 추출합니다. AI 검수 공개를 선택하면 OCR은 자동으로 적용되며 AI에는 원본 파일 대신 텍스트만 전달됩니다.</p><label><input type="checkbox" checked={ocr || publishMode === "ai_review"} disabled={publishMode === "ai_review"} onChange={(event) => setOcr(event.target.checked)} /> 이미지·PDF 글자 인식(Azure OCR)</label><label><input type="checkbox" checked={textOnly} onChange={(event) => setTextOnly(event.target.checked)} /> 원본 대신 텍스트만 학습 DB에 공개</label><label><input type="checkbox" checked={splitQuestionSet} onChange={(event) => setSplitQuestionSet(event.target.checked)} /> 번호가 있는 문제를 문제별로 나누기</label><label><input type="checkbox" checked={createRecall} onChange={(event) => setCreateRecall(event.target.checked)} /> 규칙 기반 능동 회상 카드 만들기</label></fieldset>
           <label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} placeholder="자료의 출처와 어떤 학습에 도움이 되는지 적어주세요." rows={5} /></label>
           <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, {publishMode === "instant" ? "검수 없이 즉시 공개되고 크레딧이 지급되지 않는 것" : "AI가 자료를 분석하며 통과한 경우에만 공개·보상되는 것"}에 동의합니다.</span></label>
