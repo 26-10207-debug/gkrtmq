@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { AuthPanel } from "./AuthPanel";
 
 type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing";
 type StudyMode = "info" | "examples" | "recall" | "plan";
@@ -231,6 +232,12 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     setCommunityAssets((current) => [asset, ...current.filter((existing) => existing.id !== asset.id)]);
   }
 
+  function updatePublishedContribution(item: ContributionRecord) {
+    const asset = contributionToAsset(item);
+    setCommunityAssets((current) => current.map((existing) => existing.id === asset.id ? asset : existing));
+    setSelectedAsset((current) => current.id === asset.id ? asset : current);
+  }
+
   function startStudy(mode: StudyMode) {
     setStudyMode(mode);
     setStudyIndex(0);
@@ -273,7 +280,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         query={query}
         onQueryChange={(value) => { setQuery(value); setView("search"); }}
         onLogo={() => setView("search")}
-        onContribute={() => setView("contribute")}
+        onContribute={() => setView(user ? "contribute" : "account")}
         onAccount={() => setView("account")}
         onPricing={() => setView("pricing")}
         user={user}
@@ -307,7 +314,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         />
       )}
       {view === "contribute" && <ContributionScreen onBack={() => setView("search")} onPublished={addPublishedContribution} />}
-      {view === "account" && <AccountScreen user={user} onBack={() => setView("search")} onPricing={() => setView("pricing")} />}
+      {view === "account" && <AccountScreen user={user} onBack={() => setView("search")} onPricing={() => setView("pricing")} onUpdated={updatePublishedContribution} />}
       {view === "pricing" && <PricingScreen onBack={() => setView("search")} />}
     </div>
   );
@@ -697,13 +704,31 @@ const statusLabels: Record<string, string> = {
   review_failed: "검수 오류",
 };
 
-function AccountScreen({ user, onBack, onPricing }: { user: AccountUser | null; onBack: () => void; onPricing: () => void }) {
+function AccountScreen({ user, onBack, onPricing, onUpdated }: { user: AccountUser | null; onBack: () => void; onPricing: () => void; onUpdated: (item: ContributionRecord) => void }) {
   const [data, setData] = useState<AccountData | null>(null);
   useEffect(() => {
+    if (!user) return;
     let active = true;
     fetch("/api/account").then((response) => response.json()).then((value: AccountData) => { if (active) setData(value); }).catch(() => undefined);
     return () => { active = false; };
-  }, []);
+  }, [user]);
+
+  function replaceContribution(updated: ContributionRecord) {
+    setData((current) => current ? {
+      ...current,
+      contributions: current.contributions.map((item) => item.id === updated.id ? { ...item, title: updated.title, sourceNote: updated.sourceNote } : item),
+    } : current);
+    onUpdated(updated);
+  }
+
+  if (!user) {
+    return (
+      <main className="account-main">
+        <button className="back-button" type="button" onClick={onBack}>← 검색으로 돌아가기</button>
+        <AuthPanel />
+      </main>
+    );
+  }
 
   return (
     <main className="account-main">
@@ -717,17 +742,42 @@ function AccountScreen({ user, onBack, onPricing }: { user: AccountUser | null; 
       <section className="account-stats"><div><span>공개한 자료</span><strong>{data?.stats.contributionCount ?? 0}</strong></div><div><span>누적 조회</span><strong>{(data?.stats.totalViews ?? 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>
       <section className="account-contributions">
         <div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>검수·공개 현황</h2></div></div>
-        {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <ContributionEditor key={item.id} item={item} />)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
+        {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <ContributionEditor key={item.id} item={item} onSaved={replaceContribution} />)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
       </section>
       <section className="credit-history"><div className="section-heading"><div><p className="eyebrow">크레딧</p><h2>지급 내역</h2></div></div>{data?.ledger.length ? <div>{data.ledger.map((entry) => <article key={entry.id}><div><strong>{entry.reason}</strong><span>{new Date(entry.createdAt).toLocaleDateString("ko-KR")}</span></div><b>+{entry.amount} C</b></article>)}</div> : <div className="empty-state compact-empty"><strong>아직 크레딧 내역이 없습니다.</strong><span>AI 검수를 통과한 자료가 공개되면 여기에 기록됩니다.</span></div>}</section>
     </main>
   );
 }
 
-function ContributionEditor({ item }: { item: AccountData["contributions"][number] }) {
-  const [editing, setEditing] = useState(false); const [title, setTitle] = useState(item.title); const [sourceNote, setSourceNote] = useState(item.sourceNote || ""); const [saving, setSaving] = useState(false);
-  async function save(event: FormEvent) { event.preventDefault(); setSaving(true); const response = await fetch("/api/contributions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: item.id, title, sourceNote }) }); if (response.ok) setEditing(false); setSaving(false); }
-  return <article><div><strong>{title}</strong><span>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</span></div><div className="record-meta"><span className={`status-pill ${item.status}`}>{statusLabels[item.status] || item.status}</span><span>{item.publishMode === "ai_review" ? "AI 검수 공개" : "즉시 공개"}</span><b>{item.creditsAwarded > 0 ? `+${item.creditsAwarded} C` : "보상 없음"}</b></div>{!editing ? <button className="record-edit-button" type="button" onClick={() => setEditing(true)}>자료 정보 수정</button> : <form className="record-edit-form" onSubmit={save}><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} required /><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} maxLength={2000} rows={3} /><button className="primary-button" disabled={saving}>{saving ? "저장 중…" : "저장"}</button></form>}</article>;
+function ContributionEditor({ item, onSaved }: { item: AccountData["contributions"][number]; onSaved: (item: ContributionRecord) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(item.title);
+  const [sourceNote, setSourceNote] = useState(item.sourceNote || "");
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage(null);
+    try {
+      const response = await fetch("/api/contributions", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: item.id, title, sourceNote }) });
+      const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord };
+      if (!response.ok || !data.contribution) {
+        setMessage(data.error || "자료를 저장하지 못했습니다.");
+        return;
+      }
+      onSaved(data.contribution);
+      setMessage(data.message || "자료 정보가 저장되었습니다.");
+      setEditing(false);
+    } catch {
+      setMessage("저장 중 연결 문제가 발생했습니다.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <article><div><strong>{title}</strong><span>{new Date(item.createdAt).toLocaleDateString("ko-KR")}</span></div><div className="record-meta"><span className={`status-pill ${item.status}`}>{statusLabels[item.status] || item.status}</span><span>{item.publishMode === "ai_review" ? "AI 검수 공개" : "즉시 공개"}</span><b>{item.creditsAwarded > 0 ? `+${item.creditsAwarded} C` : "보상 없음"}</b></div><p className="record-file">{item.originalName}</p>{item.errorMessage && <p>{item.errorMessage}</p>}{!editing ? <button className="record-edit-button" type="button" onClick={() => { setEditing(true); setMessage(null); }}>자료 정보 수정</button> : <form className="record-edit-form" onSubmit={save}><label><span>제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={160} required /></label><label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} maxLength={2000} rows={4} /></label><div><button className="primary-button compact" type="submit" disabled={saving}>{saving ? "저장 중…" : "저장"}</button><button className="secondary-button" type="button" onClick={() => { setEditing(false); setTitle(item.title); setSourceNote(item.sourceNote || ""); }}>취소</button></div></form>}{message && <p className="record-message">{message}</p>}</article>;
 }
 
 function PricingScreen({ onBack }: { onBack: () => void }) {

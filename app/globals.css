@@ -257,6 +257,17 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .status-pill.awaiting_ai, .status-pill.analyzing { background: #fff1cf; color: #855d00; }
 .status-pill.review_rejected, .status-pill.review_failed { background: #f6e3e0; color: var(--red); }
 .account-records article > p { margin: 0; color: var(--red); font-size: 13px; }
+.account-records article > .record-file { color: var(--muted); }
+.record-edit-button { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--green); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
+.record-edit-form { display: grid; gap: 14px; padding-top: 8px; border-top: 1px solid var(--line); }
+.record-edit-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 800; }
+.record-edit-form input, .record-edit-form textarea { width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); color: var(--text); font: inherit; }
+.record-edit-form > div { display: flex; gap: 8px; }
+.account-records article > .record-message { color: var(--green-dark); }
+.auth-panel { width: min(560px, 100%); margin: 40px auto 0; padding: 34px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
+.auth-heading h2 { margin: 0; font-family: Georgia, "Noto Serif KR", serif; font-size: 34px; font-weight: 500; }
+.auth-heading > p:last-child { color: var(--muted); line-height: 1.7; }
+.auth-panel .primary-button { margin-top: 24px; text-decoration: none; }
 .credit-history { margin-top: 54px; }
 .credit-history > div:last-child { display: grid; gap: 8px; }
 .credit-history article { padding: 16px 4px; border-bottom: 1px solid var(--line); }
