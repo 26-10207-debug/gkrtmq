@@ -30,6 +30,11 @@ type Asset = {
   recallJson?: string | null;
   textOnly?: boolean;
   mechanicalError?: string | null;
+  sourceUrl?: string;
+  sourceName?: string;
+  licenseNote?: string;
+  accessMode?: "structured_reference" | "external_link";
+  isReference?: boolean;
 };
 
 type AccountUser = { displayName: string; email: string; authMethod: "chatgpt" | "app" };
@@ -53,6 +58,18 @@ type ContributionRecord = {
   textOnly?: number;
   mechanicalError?: string | null;
   isMine?: number;
+};
+
+type ReferenceRecord = {
+  id: string;
+  title: string;
+  description: string;
+  topic: string;
+  sourceName: string;
+  sourceUrl: string;
+  licenseNote: string;
+  accessMode: "structured_reference" | "external_link";
+  tagsJson: string;
 };
 
 function contributionToAsset(item: ContributionRecord): Asset {
@@ -80,6 +97,33 @@ function contributionToAsset(item: ContributionRecord): Asset {
     recallJson: item.recallJson,
     textOnly: item.textOnly === 1,
     mechanicalError: item.mechanicalError,
+  };
+}
+
+function referenceToAsset(item: ReferenceRecord): Asset {
+  let tags = ["공식 참고", item.sourceName];
+  try {
+    const parsed = JSON.parse(item.tagsJson) as unknown;
+    if (Array.isArray(parsed) && parsed.every((tag) => typeof tag === "string")) tags = parsed;
+  } catch {
+    // Keep the safe source labels when a legacy reference has malformed tags.
+  }
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    type: "공개 참고",
+    tags: [item.accessMode === "external_link" ? "외부 링크" : "구조화 참고", ...tags].slice(0, 4),
+    rating: 0,
+    reviews: 0,
+    views: 0,
+    examples: 0,
+    questions: 0,
+    sourceName: item.sourceName,
+    sourceUrl: item.sourceUrl,
+    licenseNote: item.licenseNote,
+    accessMode: item.accessMode,
+    isReference: true,
   };
 }
 
@@ -201,6 +245,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [answer, setAnswer] = useState("");
   const [confidence, setConfidence] = useState(0);
   const [communityAssets, setCommunityAssets] = useState<Asset[]>([]);
+  const [referenceAssets, setReferenceAssets] = useState<Asset[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -210,10 +255,16 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         if (active) setCommunityAssets((data.contributions ?? []).map(contributionToAsset));
       })
       .catch(() => undefined);
+    fetch("/api/references")
+      .then((response) => response.json())
+      .then((data: { references?: ReferenceRecord[] }) => {
+        if (active) setReferenceAssets((data.references ?? []).map(referenceToAsset));
+      })
+      .catch(() => undefined);
     return () => { active = false; };
   }, []);
 
-  const allAssets = useMemo(() => [...communityAssets, ...assets], [communityAssets]);
+  const allAssets = useMemo(() => [...communityAssets, ...referenceAssets, ...assets], [communityAssets, referenceAssets]);
 
   const filteredAssets = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -363,7 +414,7 @@ function SearchScreen(props: {
   onOpen: (asset: Asset) => void;
   onUpdated: (item: ContributionRecord) => void;
 }) {
-  const filters = ["전체", "사용자 자료", "개념 설명", "예시·적용", "회상 문제", "오개념"];
+  const filters = ["전체", "사용자 자료", "공개 참고", "개념 설명", "예시·적용", "회상 문제", "오개념"];
   return (
     <div className="search-layout">
       <aside className="filter-panel">
@@ -383,7 +434,7 @@ function SearchScreen(props: {
           <div>
             <p className="eyebrow">물리학 · 검색 결과</p>
             <h1>‘{props.query || "전체"}’ 관련 학습 파일</h1>
-            <p>{props.assets.length}개 결과 · 예시와 능동 회상 도구가 포함되어 있어요.</p>
+            <p>{props.assets.length}개 결과 · 기여 자료와 출처가 확인된 참고 자료를 함께 보여드려요.</p>
           </div>
           <select aria-label="정렬 방식" defaultValue="relevance"><option value="relevance">관련도순</option><option value="rating">평가순</option><option value="views">조회순</option></select>
         </div>
@@ -399,7 +450,7 @@ function SearchScreen(props: {
               <span className="file-copy">
                 <span className="file-title">{asset.title}</span>
                 <span className="file-description">{asset.description}</span>
-                <span className="tag-row"><span className="tag accent">{asset.tags[0]}</span><span className="tag">{asset.type}</span><span className="tag">{asset.tags[1]}</span></span>
+                <span className="tag-row"><span className="tag accent">{asset.tags[0]}</span><span className="tag">{asset.type}</span><span className="tag">{asset.tags[1]}</span>{asset.sourceName && <span className="tag">출처 {asset.sourceName}</span>}</span>
               </span>
               <span className="file-metrics"><strong>★ {asset.rating}</strong><span>평가 {asset.reviews}</span><span>조회 {formatViews(asset.views)}</span></span>
               <span className="card-arrow" aria-hidden="true">→</span>
@@ -446,6 +497,29 @@ function SearchContributionEditor({ asset, onSaved }: { asset: Asset; onSaved: (
 }
 
 function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void }) {
+  if (props.asset.isReference) {
+    const isExternal = props.asset.accessMode === "external_link";
+    return (
+      <main className="detail-main">
+        <button className="back-button" type="button" onClick={props.onBack}>← 검색 결과</button>
+        <section className="detail-hero uploaded-detail">
+          <div className="detail-copy">
+            <p className="eyebrow">물리학 · {isExternal ? "외부 학습 자료" : "구조화 참고 자료"}</p>
+            <h1>{props.asset.title}</h1>
+            <p>{props.asset.description}</p>
+            <div className="tag-row">{props.asset.tags.map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div>
+          </div>
+          <div className="uploaded-file-card">
+            <span>원문·데이터 출처</span>
+            <strong>{props.asset.sourceName}</strong>
+            <p>{isExternal ? "이 앱은 원문을 저장하거나 재배포하지 않고, 학습에 필요한 외부 자료로 연결합니다." : "이 앱에는 학습에 필요한 요약과 출처 정보만 저장합니다. 최신 내용은 원문에서 확인하세요."}</p>
+            {props.asset.sourceUrl && <a className="primary-button" href={props.asset.sourceUrl} target="_blank" rel="noreferrer">출처 열기 ↗</a>}
+          </div>
+        </section>
+        <section className="upload-notice"><strong>이용 및 라이선스</strong><p>{props.asset.licenseNote}</p></section>
+      </main>
+    );
+  }
   if (props.asset.isUpload) {
     return (
       <main className="detail-main">

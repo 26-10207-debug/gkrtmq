@@ -75,6 +75,21 @@ export function ensureSchema() {
         )
       `),
       DB.prepare(`
+        CREATE TABLE IF NOT EXISTS reference_library (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          topic TEXT NOT NULL,
+          source_name TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          license_note TEXT NOT NULL,
+          access_mode TEXT NOT NULL,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `),
+      DB.prepare(`
         CREATE TABLE IF NOT EXISTS contributions (
           id TEXT PRIMARY KEY,
           title TEXT NOT NULL,
@@ -192,7 +207,89 @@ export function ensureSchema() {
         CREATE INDEX IF NOT EXISTS learning_progress_learner_idx
         ON learning_progress (learner_id, updated_at DESC)
       `),
+      DB.prepare(`
+        CREATE INDEX IF NOT EXISTS reference_library_topic_idx
+        ON reference_library (topic, updated_at DESC)
+      `),
+      DB.prepare(`
+        CREATE INDEX IF NOT EXISTS reference_library_source_idx
+        ON reference_library (source_name)
+      `),
     ]);
+
+    const referenceSeeds = [
+      {
+        id: "nist-core-constants",
+        title: "NIST CODATA 핵심 상수 — 빛의 속력과 플랑크 상수",
+        description: "빛의 속력 c = 299,792,458 m/s와 플랑크 상수 h = 6.62607015×10⁻³⁴ J·s처럼 SI에서 정확히 정의된 상수를 확인하고, 단위·유효숫자 문제에 활용합니다.",
+        topic: "물리학 · 측정과 상수",
+        sourceName: "NIST CODATA",
+        sourceUrl: "https://physics.nist.gov/cgi-bin/cuu/CCValue?uhz%7CShowFirst=Browse",
+        licenseNote: "NIST 원문·데이터의 최신 값과 이용 조건은 출처에서 다시 확인하세요. 이 DB에는 학습용 요약과 출처 링크만 보관합니다.",
+        accessMode: "structured_reference",
+        tags: ["공식 데이터", "SI", "상수", "출처 확인"],
+      },
+      {
+        id: "wikidata-physics-graph",
+        title: "Wikidata로 잇는 물리 개념 연결 지도",
+        description: "힘·돌림힘·에너지·파동처럼 서로 연결된 개념을 Wikidata의 공개 식별자와 관계로 탐색하는 참고 자료입니다. 검색어를 넓히고 관련 개념을 찾는 데 활용하세요.",
+        topic: "물리학 · 개념 탐색",
+        sourceName: "Wikidata",
+        sourceUrl: "https://www.wikidata.org/wiki/Wikidata:Text_of_the_Creative_Commons_Public_Domain_Dedication",
+        licenseNote: "Wikidata 구조화 데이터는 CC0 공개헌신으로 제공됩니다. 개별 출처의 이미지·설명문은 별도 권리가 있을 수 있으므로 원문 페이지에서 확인하세요.",
+        accessMode: "structured_reference",
+        tags: ["CC0", "개념 연결", "식별자", "탐색"],
+      },
+      {
+        id: "nasa-science-media",
+        title: "NASA 과학 데이터·시각 자료 출처 안내",
+        description: "우주·지구·태양계 학습에 쓸 공개 NASA 데이터와 시각 자료의 출처를 찾는 안내입니다. 자료의 과학적 맥락과 크레딧 표기를 함께 확인합니다.",
+        topic: "물리학 · 우주와 관측",
+        sourceName: "NASA",
+        sourceUrl: "https://www.nasa.gov/nasa-brand-center/images-and-media/",
+        licenseNote: "NASA 로고·휘장 사용은 금지되며, 제3자 저작권 표기가 있는 자료는 별도 허가가 필요할 수 있습니다. NASA의 후원·보증처럼 보이게 사용하지 마세요.",
+        accessMode: "structured_reference",
+        tags: ["공식 출처", "우주", "이미지", "이용 조건"],
+      },
+      {
+        id: "openstax-university-physics-1",
+        title: "OpenStax 대학물리학 1권 — 외부 학습 링크",
+        description: "역학·파동·열을 단계적으로 다루는 공개 교재의 원문으로 이동합니다. 이 앱에는 교재 본문을 저장하지 않고 외부 출처만 연결합니다.",
+        topic: "물리학 · 교과 학습",
+        sourceName: "OpenStax",
+        sourceUrl: "https://openstax.org/books/university-physics-volume-1/pages/1-introduction",
+        licenseNote: "원문을 복제하거나 유료 서비스에 포함하기 전에는 해당 판본·페이지의 라이선스를 직접 확인해야 합니다.",
+        accessMode: "external_link",
+        tags: ["외부 학습 자료", "교재", "라이선스 확인"],
+      },
+      {
+        id: "phet-physics-simulations",
+        title: "PhET 물리 시뮬레이션 — 외부 학습 링크",
+        description: "직접 조작으로 힘·에너지·파동을 탐구할 수 있는 PhET 시뮬레이션 목록으로 이동합니다. 수업 또는 개인 학습에서 예시를 확인할 때 사용하세요.",
+        topic: "물리학 · 시뮬레이션",
+        sourceName: "PhET Interactive Simulations",
+        sourceUrl: "https://phet.colorado.edu/en/simulations",
+        licenseNote: "이 앱은 PhET 시뮬레이션을 복제·재배포하지 않고 링크만 제공합니다. 유료·상업적 사용 전에는 현재 라이선스와 사용 조건을 확인해야 합니다.",
+        accessMode: "external_link",
+        tags: ["외부 학습 자료", "시뮬레이션", "라이선스 확인"],
+      },
+    ];
+    await DB.batch(referenceSeeds.map((reference) => DB.prepare(`
+      INSERT OR IGNORE INTO reference_library
+        (id, title, description, topic, source_name, source_url, license_note, access_mode, tags_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      reference.id,
+      reference.title,
+      reference.description,
+      reference.topic,
+      reference.sourceName,
+      reference.sourceUrl,
+      reference.licenseNote,
+      reference.accessMode,
+      JSON.stringify(reference.tags),
+    )));
+    await DB.prepare("PRAGMA optimize").run();
   })();
 
   return initialization;

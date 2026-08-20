@@ -47,6 +47,20 @@ export const authVerification = sqliteTable("auth_verification", {
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }),
 });
 
+export const referenceLibrary = sqliteTable("reference_library", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(),
+  description: text("description").notNull(),
+  topic: text("topic").notNull(),
+  sourceName: text("source_name").notNull(),
+  sourceUrl: text("source_url").notNull(),
+  licenseNote: text("license_note").notNull(),
+  accessMode: text("access_mode").notNull(),
+  tagsJson: text("tags_json").notNull().default("[]"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const contributions = sqliteTable("contributions", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),
