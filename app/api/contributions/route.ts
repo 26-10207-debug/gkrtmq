@@ -2,7 +2,7 @@ import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { structureContribution } from "@/lib/learning-ai";
 import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
-import { customMaterialsForReview, normalizeCustomMaterials } from "@/lib/custom-materials";
+import { customMaterialsForReview, hasImageSelection, normalizeCustomMaterials } from "@/lib/custom-materials";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const REVIEW_REWARD = 20;
@@ -55,6 +55,7 @@ export async function POST(request: Request) {
   const file = form.get("file");
   const title = String(form.get("title") ?? "").trim();
   const sourceNote = String(form.get("sourceNote") ?? "").trim();
+  const providedText = String(form.get("extractedText") ?? "").trim().slice(0, 100_000);
   let customMaterials;
   try {
     customMaterials = normalizeCustomMaterials(String(form.get("customMaterials") ?? "{}"));
@@ -72,6 +73,7 @@ export async function POST(request: Request) {
 
   if (!(file instanceof File) || !title) return Response.json({ error: "제목과 파일이 필요합니다." }, { status: 400 });
   if (!licenseConfirmed) return Response.json({ error: "기여 권한과 선택한 공개 방식에 동의해야 합니다." }, { status: 400 });
+  if (mechanicalOptions.textOnly && hasImageSelection(customMaterials)) return Response.json({ error: "이미지에서 선택한 암기 영역을 공개하려면 원본 공개를 유지해야 합니다." }, { status: 400 });
   if (file.size > MAX_UPLOAD_BYTES) return Response.json({ error: "현재는 파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
   if (!ALLOWED_TYPES.has(file.type)) return Response.json({ error: "지원하지 않는 파일 형식입니다." }, { status: 415 });
 
@@ -82,12 +84,12 @@ export async function POST(request: Request) {
   const bytes = await file.arrayBuffer();
   const effectiveMechanicalOptions: MechanicalOptions = {
     ...mechanicalOptions,
-    // AI 검수에는 원본 이미지·파일을 전달하지 않고, 항상 추출 텍스트만 전달한다.
-    ocr: mechanicalOptions.ocr || publishMode === "ai_review",
+    // AI 검수에는 원본 이미지·파일을 전달하지 않고, 추출 텍스트만 전달한다.
+    ocr: mechanicalOptions.ocr || (publishMode === "ai_review" && !providedText),
   };
-  const hasMechanicalTools = Object.values(effectiveMechanicalOptions).some(Boolean);
+  const hasMechanicalTools = Boolean(providedText) || Object.values(effectiveMechanicalOptions).some(Boolean);
   const initialStatus = publishMode === "ai_review"
-    ? "ocr_processing"
+    ? providedText ? "mechanical_processing" : "ocr_processing"
     : mechanicalOptions.textOnly ? "mechanical_processing" : "published";
 
   await runtime.UPLOADS.put(objectKey, bytes, {
@@ -114,6 +116,7 @@ export async function POST(request: Request) {
     bytes,
     contentType: file.type,
     filename: file.name,
+    providedText,
     azureEndpoint: runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT,
     azureApiKey: runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY,
   });

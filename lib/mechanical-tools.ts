@@ -131,14 +131,17 @@ export async function processMechanically(options: {
   bytes: ArrayBuffer;
   contentType: string;
   filename: string;
+  providedText?: string;
   azureEndpoint?: string;
   azureApiKey?: string;
 }): Promise<MechanicalResult> {
-  const needsText = options.input.ocr || options.input.textOnly || options.input.splitQuestions || options.input.createRecall;
+  const needsText = Boolean(options.providedText?.trim()) || options.input.ocr || options.input.textOnly || options.input.splitQuestions || options.input.createRecall;
   if (!needsText) return { status: "completed", text: "", questions: [], recallCards: [] };
 
   let text = "";
-  if (options.contentType === "text/plain" || options.contentType === "text/markdown") {
+  if (options.providedText?.trim()) {
+    text = options.providedText;
+  } else if (options.contentType === "text/plain" || options.contentType === "text/markdown") {
     text = new TextDecoder("utf-8", { fatal: false }).decode(options.bytes);
   } else if (options.input.ocr) {
     if (!options.azureEndpoint || !options.azureApiKey) {
