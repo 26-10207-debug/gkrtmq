@@ -75,6 +75,14 @@ type ReferenceRecord = {
   tagsJson: string;
 };
 
+type LearningProgress = {
+  assetId: string;
+  mode: StudyMode;
+  completedItems: number;
+  score: number;
+  updatedAt: string;
+};
+
 function contributionToAsset(item: ContributionRecord): Asset {
   let customMaterials = emptyCustomMaterials();
   try {
@@ -248,8 +256,10 @@ function formatViews(value: number) {
 
 export function LearningApp({ user }: { user: AccountUser | null }) {
   const [view, setView] = useState<View>("search");
-  const [query, setQuery] = useState("돌림힘");
+  const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("전체");
+  const [sort, setSort] = useState("relevance");
+  const [hasSearched, setHasSearched] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState(assets[0]);
   const [studyMode, setStudyMode] = useState<StudyMode>("info");
   const [studyIndex, setStudyIndex] = useState(0);
@@ -259,6 +269,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [studyCompleted, setStudyCompleted] = useState(false);
   const [communityAssets, setCommunityAssets] = useState<Asset[]>([]);
   const [referenceAssets, setReferenceAssets] = useState<Asset[]>([]);
+  const [progress, setProgress] = useState<LearningProgress[]>([]);
 
   useEffect(() => {
     let active = true;
@@ -277,20 +288,63 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    if (!user) {
+      setProgress([]);
+      return;
+    }
+    let active = true;
+    fetch("/api/progress")
+      .then((response) => response.ok ? response.json() : { progress: [] })
+      .then((data: { progress?: LearningProgress[] }) => {
+        if (active) setProgress(data.progress ?? []);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [user]);
+
   const allAssets = useMemo(() => [...communityAssets, ...referenceAssets, ...assets], [communityAssets, referenceAssets]);
 
   const filteredAssets = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    return allAssets.filter((asset) => {
+    const results = allAssets.filter((asset) => {
       const matchesQuery = !keyword || `${asset.title} ${asset.description} ${asset.tags.join(" ")}`.toLowerCase().includes(keyword) || keyword === "토크";
       return matchesQuery && (filter === "전체" || asset.type === filter);
     });
-  }, [allAssets, filter, query]);
+    if (sort === "rating") return [...results].sort((a, b) => b.rating - a.rating);
+    if (sort === "views") return [...results].sort((a, b) => b.views - a.views);
+    return results;
+  }, [allAssets, filter, query, sort]);
+
+  const continuedAsset = useMemo(() => {
+    const latest = progress[0];
+    return latest ? allAssets.find((asset) => asset.id === latest.assetId) : undefined;
+  }, [allAssets, progress]);
+
+  const myAsset = useMemo(() => communityAssets.find((asset) => asset.isMine), [communityAssets]);
+  const recommendation = assets[new Date().getDate() % assets.length];
+  const reference = referenceAssets[0];
 
   function openAsset(asset: Asset) {
     setSelectedAsset(asset);
     setView("detail");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function showHome() {
+    setView("search");
+    setHasSearched(false);
+    setQuery("");
+    setFilter("전체");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function runSearch(value: string) {
+    setQuery(value.trim());
+    setFilter("전체");
+    setSort("relevance");
+    setHasSearched(Boolean(value.trim()));
+    window.requestAnimationFrame(() => document.getElementById("explore")?.scrollIntoView({ behavior: "smooth", block: "start" }));
   }
 
   function addPublishedContribution(item: ContributionRecord) {
@@ -349,24 +403,32 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   return (
     <div className="app-shell">
       <Header
-        query={query}
-        onQueryChange={(value) => { setQuery(value); setView("search"); }}
-        onLogo={() => setView("search")}
+        onLogo={showHome}
         onContribute={() => setView(user ? "contribute" : "account")}
         onAccount={() => setView("account")}
-        onPricing={() => setView("pricing")}
         user={user}
+        isHome={view === "search"}
       />
 
       {view === "search" && (
         <SearchScreen
           query={query}
           filter={filter}
+          sort={sort}
+          hasSearched={hasSearched}
           assets={filteredAssets}
+          user={user}
+          continuedAsset={continuedAsset}
+          myAsset={myAsset}
+          recommendation={recommendation}
+          reference={reference}
           onFilter={setFilter}
-          onQuery={setQuery}
+          onSort={setSort}
+          onSearch={runSearch}
           onOpen={openAsset}
           onUpdated={updatePublishedContribution}
+          onContribute={() => setView(user ? "contribute" : "account")}
+          onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
         />
       )}
       {view === "detail" && <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} />}
@@ -388,39 +450,31 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onMode={startStudy}
         />
       )}
-      {view === "contribute" && <ContributionScreen onBack={() => setView("search")} onPublished={addPublishedContribution} />}
-      {view === "account" && <AccountScreen user={user} onBack={() => setView("search")} onPricing={() => setView("pricing")} onUpdated={updatePublishedContribution} />}
-      {view === "pricing" && <PricingScreen onBack={() => setView("search")} />}
+      {view === "contribute" && <ContributionScreen onBack={showHome} onPublished={addPublishedContribution} />}
+      {view === "account" && <AccountScreen user={user} onBack={showHome} onPricing={() => setView("pricing")} onUpdated={updatePublishedContribution} />}
+      {view === "pricing" && <PricingScreen onBack={showHome} />}
     </div>
   );
 }
 
 function Header(props: {
-  query: string;
-  onQueryChange: (value: string) => void;
   onLogo: () => void;
   onContribute: () => void;
   onAccount: () => void;
-  onPricing: () => void;
   user: AccountUser | null;
+  isHome: boolean;
 }) {
   return (
-    <header className="topbar">
-      <button className="brand" type="button" onClick={props.onLogo} aria-label="검색 홈으로">
-        <span className="brand-mark">L</span>
-        <span>학습 DB</span>
+    <header className={props.isHome ? "topbar topbar-home" : "topbar"}>
+      <button className="brand" type="button" onClick={props.onLogo} aria-label="Dumb Can Learn 홈으로">
+        <span className="brand-mark">D</span>
+        <span>Dumb Can Learn</span>
       </button>
-      <label className="global-search">
-        <span aria-hidden="true">⌕</span>
-        <input value={props.query} onChange={(event) => props.onQueryChange(event.target.value)} aria-label="학습 자료 검색" placeholder="무엇을 배우고 싶나요?" />
-      </label>
       <div className="header-actions">
-        <button className="pricing-link" type="button" onClick={props.onPricing}>요금제</button>
-        <button className="account-button" type="button" onClick={props.onAccount} aria-label="내 계정 열기">
+        <button className="contribute-button" type="button" onClick={props.onContribute} aria-label="자료 기여 열기"><span aria-hidden="true">＋</span> 자료 기여</button>
+        <button className="account-button account-button-compact" type="button" onClick={props.onAccount} aria-label="내 계정 열기">
           <span>{props.user?.displayName?.slice(0, 1).toUpperCase() || "?"}</span>
-          <b>{props.user?.displayName || "계정"}</b>
         </button>
-        <button className="primary-button compact" type="button" onClick={props.onContribute}>자료 기여</button>
       </div>
     </header>
   );
@@ -429,39 +483,58 @@ function Header(props: {
 function SearchScreen(props: {
   query: string;
   filter: string;
+  sort: string;
+  hasSearched: boolean;
   assets: Asset[];
+  user: AccountUser | null;
+  continuedAsset?: Asset;
+  myAsset?: Asset;
+  recommendation: Asset;
+  reference?: Asset;
   onFilter: (value: string) => void;
-  onQuery: (value: string) => void;
+  onSort: (value: string) => void;
+  onSearch: (value: string) => void;
   onOpen: (asset: Asset) => void;
   onUpdated: (item: ContributionRecord) => void;
+  onContribute: () => void;
+  onResume: (asset: Asset, mode: StudyMode) => void;
 }) {
   const filters = ["전체", "사용자 자료", "공개 참고", "개념 설명", "예시·적용", "회상 문제", "오개념"];
+  const [draft, setDraft] = useState(props.query);
+  useEffect(() => setDraft(props.query), [props.query]);
+  function submitSearch(event: FormEvent) {
+    event.preventDefault();
+    props.onSearch(draft);
+  }
   return (
-    <div className="search-layout">
-      <aside className="filter-panel">
-        <p className="section-label">자료 유형</p>
-        {filters.map((item) => (
-          <button key={item} className={props.filter === item ? "filter-button active" : "filter-button"} type="button" onClick={() => props.onFilter(item)}>
-            <span>{item}</span><span>{item === "전체" ? assets.length : assets.filter((asset) => asset.type === item).length}</span>
-          </button>
-        ))}
-        <div className="filter-divider" />
-        <p className="section-label">게시 원칙</p>
-        <p className="sidebar-note"><span className="status-dot" /> 즉시 공개는 보상 없음 · AI 검수 통과 자료는 크레딧 지급</p>
-      </aside>
+    <>
+      <section className="home-hero" aria-labelledby="home-title">
+        <div className="hero-orb orb-one" /><div className="hero-orb orb-two" /><div className="hero-orb orb-three" /><div className="hero-orb orb-four" />
+        <div className="hero-copy">
+          <p className="hero-kicker">능동 회상 · 예시 중심 학습</p>
+          <h1 id="home-title">Learn with what you know.</h1>
+          <form className="hero-search" onSubmit={submitSearch}>
+            <label className="sr-only" htmlFor="home-search">학습 자료 검색</label>
+            <input id="home-search" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="무엇을 배우고 싶나요?" />
+            <button type="submit" aria-label="검색 실행">⌕</button>
+          </form>
+          <p className="hero-hint">예: 돌림힘, 회전 평형, 모멘트 암</p>
+        </div>
+      </section>
 
-      <main className="results-main">
+      <main className="explore-main" id="explore">
+        {!props.hasSearched ? <DiscoveryGrid {...props} /> : <>
         <div className="results-heading">
           <div>
             <p className="eyebrow">물리학 · 검색 결과</p>
-            <h1>‘{props.query || "전체"}’ 관련 학습 파일</h1>
+            <h2>‘{props.query}’ 관련 학습 자료</h2>
             <p>{props.assets.length}개 결과 · 기여 자료와 출처가 확인된 참고 자료를 함께 보여드려요.</p>
           </div>
-          <select aria-label="정렬 방식" defaultValue="relevance"><option value="relevance">관련도순</option><option value="rating">평가순</option><option value="views">조회순</option></select>
+          <details className="filter-panel"><summary>필터와 정렬 <span>⌄</span></summary><div className="filter-content"><p className="section-label">자료 유형</p><div className="filter-buttons">{filters.map((item) => <button key={item} className={props.filter === item ? "filter-button active" : "filter-button"} type="button" onClick={() => props.onFilter(item)}>{item}</button>)}</div><label className="sort-control">정렬<select aria-label="정렬 방식" value={props.sort} onChange={(event) => props.onSort(event.target.value)}><option value="relevance">관련도순</option><option value="rating">평가순</option><option value="views">조회순</option></select></label></div></details>
         </div>
         <div className="related-row">
           <span>연관</span>
-          {["토크", "회전 평형", "모멘트 암", "각운동량"].map((item) => <button type="button" key={item} onClick={() => props.onQuery(item)}>{item}</button>)}
+          {["토크", "회전 평형", "모멘트 암", "각운동량"].map((item) => <button type="button" key={item} onClick={() => { setDraft(item); props.onSearch(item); }}>{item}</button>)}
         </div>
         <div className="result-list">
           {props.assets.map((asset, index) => (
@@ -481,9 +554,23 @@ function SearchScreen(props: {
           ))}
           {!props.assets.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
         </div>
+        </>}
       </main>
-    </div>
+    </>
   );
+}
+
+function DiscoveryGrid(props: Pick<Parameters<typeof SearchScreen>[0], "user" | "continuedAsset" | "myAsset" | "recommendation" | "reference" | "onOpen" | "onContribute" | "onResume">) {
+  const primary = props.continuedAsset;
+  return <section className="discovery-section" aria-labelledby="discovery-title">
+    <div className="discovery-heading"><div><p className="eyebrow">나를 위한 학습 공간</p><h2 id="discovery-title">{props.user ? "오늘의 학습을 이어가세요." : "오늘은 무엇을 이해해 볼까요?"}</h2></div><p>짧게 읽고, 직접 떠올리고, 예시로 연결하는 학습 자료입니다.</p></div>
+    <div className="discovery-grid">
+      <article className="discovery-card priority-card"><span className="card-icon">↗</span><p>{props.user ? "이어 학습하기" : "추천 탐색"}</p><h3>{primary?.title || props.recommendation.title}</h3><small>{primary ? "최근 학습하던 자료를 다시 열어 보세요." : "돌림힘부터 예시와 회상으로 시작해 보세요."}</small><button type="button" onClick={() => primary ? props.onResume(primary, "recall") : props.onOpen(props.recommendation)}>{primary ? "회상 학습 재개" : "자료 둘러보기"} <b>→</b></button></article>
+      <article className="discovery-card"><span className="card-icon">＋</span><p>내 기여</p><h3>{props.myAsset?.title || "나만의 자료를 더해 보세요"}</h3><small>{props.myAsset ? "내가 공개한 자료를 확인하고 수정할 수 있어요." : "자료 기여로 학습 자료를 공개할 수 있어요."}</small><button type="button" onClick={() => props.myAsset ? props.onOpen(props.myAsset) : props.onContribute()}>{props.myAsset ? "내 자료 열기" : "자료 기여하기"} <b>→</b></button></article>
+      <article className="discovery-card"><span className="card-icon">✦</span><p>오늘의 추천</p><h3>{props.recommendation.title}</h3><small>{props.recommendation.description}</small><button type="button" onClick={() => props.onOpen(props.recommendation)}>추천 자료 보기 <b>→</b></button></article>
+      <article className="discovery-card"><span className="card-icon">⌁</span><p>공개 참고 자료</p><h3>{props.reference?.title || "검증된 참고 자료를 불러오는 중"}</h3><small>{props.reference ? `${props.reference.sourceName}에서 제공하는 공개 참고 자료입니다.` : "공식·교육 자료를 준비하고 있어요."}</small><button type="button" disabled={!props.reference} onClick={() => props.reference && props.onOpen(props.reference)}>{props.reference ? "참고 자료 열기" : "잠시만 기다려 주세요"} <b>→</b></button></article>
+    </div>
+  </section>;
 }
 
 function SearchContributionEditor({ asset, onSaved }: { asset: Asset; onSaved: (item: ContributionRecord) => void }) {
