@@ -115,6 +115,7 @@ export function ensureSchema() {
           recall_json TEXT,
           text_only INTEGER NOT NULL DEFAULT 0,
           mechanical_error TEXT,
+          custom_materials_json TEXT NOT NULL DEFAULT '{}',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `),
@@ -171,6 +172,7 @@ export function ensureSchema() {
     if (!columns.has("recall_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN recall_json TEXT"));
     if (!columns.has("text_only")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0"));
     if (!columns.has("mechanical_error")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_error TEXT"));
+    if (!columns.has("custom_materials_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN custom_materials_json TEXT NOT NULL DEFAULT '{}'"));
     if (additions.length) await DB.batch(additions);
 
     const userColumnResult = await DB.prepare("PRAGMA table_info(users)").all();

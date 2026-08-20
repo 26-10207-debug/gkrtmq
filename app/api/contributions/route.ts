@@ -2,6 +2,7 @@ import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { structureContribution } from "@/lib/learning-ai";
 import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
+import { customMaterialsForReview, normalizeCustomMaterials } from "@/lib/custom-materials";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const REVIEW_REWARD = 20;
@@ -25,6 +26,7 @@ const contributionSelect = `
          substr(extracted_text, 1, 1200) AS extractedTextPreview,
          questions_json AS questionsJson, recall_json AS recallJson,
          text_only AS textOnly, mechanical_error AS mechanicalError,
+         custom_materials_json AS customMaterialsJson,
          created_at AS createdAt`;
 
 export async function GET(request: Request) {
@@ -53,6 +55,12 @@ export async function POST(request: Request) {
   const file = form.get("file");
   const title = String(form.get("title") ?? "").trim();
   const sourceNote = String(form.get("sourceNote") ?? "").trim();
+  let customMaterials;
+  try {
+    customMaterials = normalizeCustomMaterials(String(form.get("customMaterials") ?? "{}"));
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : "자료 구체화 내용을 확인해 주세요." }, { status: 400 });
+  }
   const licenseConfirmed = form.get("licenseConfirmed") === "true";
   const publishMode = form.get("publishMode") === "ai_review" ? "ai_review" : "instant";
   const mechanicalOptions: MechanicalOptions = {
@@ -96,9 +104,9 @@ export async function POST(request: Request) {
     runtime.DB.prepare(`
       INSERT INTO contributions
         (id, title, original_name, content_type, object_key, source_note, status,
-         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none"),
+         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status, custom_materials_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials)),
   ]);
 
   const mechanical = await processMechanically({
@@ -141,6 +149,7 @@ export async function POST(request: Request) {
     questionsJson: mechanical.questions.length ? JSON.stringify(mechanical.questions) : null,
     recallJson: mechanical.recallCards.length ? JSON.stringify(mechanical.recallCards) : null,
     textOnly: textOnly ? 1 : 0, mechanicalError: mechanical.error ?? null,
+    customMaterialsJson: JSON.stringify(customMaterials),
   };
 
   if (publishMode === "instant") {
@@ -184,6 +193,7 @@ export async function POST(request: Request) {
       extractedText: mechanical.text,
       title,
       sourceNote,
+      customMaterialsText: customMaterialsForReview(customMaterials),
     });
     const passed = learningAsset.coreConcepts.length > 0
       && learningAsset.examples.length > 0

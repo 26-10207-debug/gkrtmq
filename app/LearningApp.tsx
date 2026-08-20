@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { AuthPanel, SignOutButton } from "./AuthPanel";
+import { CustomMaterials, emptyCustomMaterials, hasCustomMaterials } from "@/lib/custom-materials";
 
 type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing";
 type StudyMode = "info" | "examples" | "recall" | "plan";
@@ -35,6 +36,7 @@ type Asset = {
   licenseNote?: string;
   accessMode?: "structured_reference" | "external_link";
   isReference?: boolean;
+  customMaterials?: CustomMaterials;
 };
 
 type AccountUser = { displayName: string; email: string; authMethod: "chatgpt" | "app" };
@@ -58,6 +60,7 @@ type ContributionRecord = {
   textOnly?: number;
   mechanicalError?: string | null;
   isMine?: number;
+  customMaterialsJson?: string;
 };
 
 type ReferenceRecord = {
@@ -73,12 +76,20 @@ type ReferenceRecord = {
 };
 
 function contributionToAsset(item: ContributionRecord): Asset {
+  let customMaterials = emptyCustomMaterials();
+  try {
+    const parsed = JSON.parse(item.customMaterialsJson || "{}") as Partial<CustomMaterials>;
+    customMaterials = { ...customMaterials, ...parsed, memorization: { ...customMaterials.memorization, ...parsed.memorization }, recall: { ...customMaterials.recall, ...parsed.recall } };
+  } catch {
+    // Older or malformed contribution records simply have no custom materials.
+  }
+  const materialCount = customMaterials.memorization.items.length + customMaterials.recall.shortCards.length + customMaterials.recall.quizzes.length + customMaterials.recall.sequences.length + customMaterials.recall.diagrams.length + customMaterials.examples.length;
   return {
     id: item.id,
     title: item.title,
     description: item.sourceNote || `${item.originalName} · 사용자가 직접 올린 학습 자료`,
     type: "사용자 자료",
-    tags: [item.publishMode === "ai_review" ? "AI 검수 완료" : "즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", item.ownerDisplayName || "기여자"],
+    tags: [item.publishMode === "ai_review" ? "AI 검수 완료" : "즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", materialCount ? `학습 도구 ${materialCount}개` : item.ownerDisplayName || "기여자"],
     rating: 0,
     reviews: 0,
     views: item.viewCount,
@@ -97,6 +108,7 @@ function contributionToAsset(item: ContributionRecord): Asset {
     recallJson: item.recallJson,
     textOnly: item.textOnly === 1,
     mechanicalError: item.mechanicalError,
+    customMaterials,
   };
 }
 
@@ -244,6 +256,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [revealed, setRevealed] = useState(false);
   const [answer, setAnswer] = useState("");
   const [confidence, setConfidence] = useState(0);
+  const [studyCompleted, setStudyCompleted] = useState(false);
   const [communityAssets, setCommunityAssets] = useState<Asset[]>([]);
   const [referenceAssets, setReferenceAssets] = useState<Asset[]>([]);
 
@@ -297,6 +310,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     setRevealed(false);
     setAnswer("");
     setConfidence(0);
+    setStudyCompleted(false);
     setView("study");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -319,6 +333,11 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   }
 
   function nextItem(total: number) {
+    if (studyIndex >= total - 1) {
+      void saveProgress(studyMode, total, confidence ? confidence * 25 : 100);
+      setStudyCompleted(true);
+      return;
+    }
     const next = Math.min(studyIndex + 1, total - 1);
     setStudyIndex(next);
     setRevealed(false);
@@ -364,6 +383,8 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onConfidence={(value) => { setConfidence(value); void saveProgress(studyMode, studyIndex + 1, value * 25); }}
           onNext={nextItem}
           onClose={() => setView("detail")}
+          completed={studyCompleted}
+          onRestart={() => { setStudyIndex(0); setRevealed(false); setAnswer(""); setConfidence(0); setStudyCompleted(false); }}
           onMode={startStudy}
         />
       )}
@@ -539,6 +560,7 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
           </div>
         </section>
         <section className="upload-notice"><strong>공개 방식</strong><p>{props.asset.tags[0] === "AI 검수 완료" ? "AI가 학습 구조와 품질 기준을 확인한 뒤 공개된 자료입니다. 기여자에게 검수 공개 보상 크레딧이 지급되었습니다." : "기여자가 AI 검수 없이 즉시 공개한 원본 자료입니다. 이 방식에는 기여 보상 크레딧이 지급되지 않습니다."}</p></section>
+        {props.asset.customMaterials && hasCustomMaterials(props.asset.customMaterials) && <CustomMaterialsPanel materials={props.asset.customMaterials} />}
         {(props.asset.mechanicalStatus && props.asset.mechanicalStatus !== "none") && <MechanicalToolsPanel asset={props.asset} />}
       </main>
     );
@@ -593,6 +615,22 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
   );
 }
 
+function CustomMaterialsPanel({ materials }: { materials: CustomMaterials }) {
+  const [revealedCards, setRevealedCards] = useState<Record<number, boolean>>({});
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, number>>({});
+  const [sequenceOrders, setSequenceOrders] = useState<Record<number, number[]>>({});
+  const [diagramAnswers, setDiagramAnswers] = useState<Record<number, string>>({});
+  return <section className="custom-materials-panel">
+    <div className="mechanical-heading"><div><p className="eyebrow">기여자가 만든 학습 도구</p><h2>암기·회상·예시로 학습하기</h2></div><span>직접 작성</span></div>
+    {materials.memorization.items.length > 0 && <article className="memorization-card"><p className="section-label">암기 액기스</p><h3>{materials.memorization.title}</h3><ul>{materials.memorization.items.map((item, index) => <li key={`${item}-${index}`}><b>{String(index + 1).padStart(2, "0")}</b><span>{item}</span></li>)}</ul></article>}
+    {materials.recall.shortCards.length > 0 && <div className="custom-tool-section"><p className="section-label">짧은 회상 카드</p><div className="custom-card-grid">{materials.recall.shortCards.map((card, index) => <article key={`${card.question}-${index}`}><span>Q{index + 1}</span><strong>{card.question}</strong><button type="button" className="secondary-button" onClick={() => setRevealedCards((current) => ({ ...current, [index]: !current[index] }))}>{revealedCards[index] ? "답 가리기" : "답 보기"}</button>{revealedCards[index] && <p>{card.answer}</p>}</article>)}</div></div>}
+    {materials.recall.quizzes.length > 0 && <div className="custom-tool-section"><p className="section-label">빠른 선택 퀴즈</p>{materials.recall.quizzes.map((quiz, index) => <article className="quiz-card" key={`${quiz.question}-${index}`}><strong>{quiz.question}</strong><div>{quiz.options.map((option, optionIndex) => <button key={option} type="button" className={quizAnswers[index] === optionIndex ? "active" : ""} onClick={() => setQuizAnswers((current) => ({ ...current, [index]: optionIndex }))}>{option}</button>)}</div>{quizAnswers[index] !== undefined && <p className={quizAnswers[index] === quiz.answerIndex ? "answer-correct" : "answer-wrong"}>{quizAnswers[index] === quiz.answerIndex ? "정답입니다." : `정답: ${quiz.options[quiz.answerIndex]}`}{quiz.explanation ? ` ${quiz.explanation}` : ""}</p>}</article>)}</div>}
+    {materials.recall.sequences.length > 0 && <div className="custom-tool-section"><p className="section-label">순서 맞추기</p>{materials.recall.sequences.map((sequence, index) => { const order = sequenceOrders[index] || []; const remaining = sequence.items.map((_, itemIndex) => itemIndex).filter((itemIndex) => !order.includes(itemIndex)); const complete = order.length === sequence.items.length; const correct = complete && order.every((itemIndex, orderIndex) => itemIndex === orderIndex); return <article className="sequence-card" key={`${sequence.prompt}-${index}`}><strong>{sequence.prompt}</strong><div className="sequence-selected">{order.length ? order.map((itemIndex, orderIndex) => <button type="button" key={`${itemIndex}-${orderIndex}`} onClick={() => setSequenceOrders((current) => ({ ...current, [index]: current[index].filter((value) => value !== itemIndex) }))}>{orderIndex + 1}. {sequence.items[itemIndex]}</button>) : <span>아래 항목을 순서대로 눌러 보세요.</span>}</div><div className="sequence-options">{remaining.map((itemIndex) => <button type="button" key={itemIndex} onClick={() => setSequenceOrders((current) => ({ ...current, [index]: [...(current[index] || []), itemIndex] }))}>{sequence.items[itemIndex]}</button>)}</div>{complete && <p className={correct ? "answer-correct" : "answer-wrong"}>{correct ? "순서가 맞습니다." : "순서를 다시 조정해 보세요. 선택한 항목을 누르면 되돌릴 수 있습니다."}</p>}</article>; })}</div>}
+    {materials.recall.diagrams.length > 0 && <div className="custom-tool-section"><p className="section-label">개념 구조 빈칸 채우기</p>{materials.recall.diagrams.map((diagram, index) => { const expected = diagram.nodes[diagram.blankIndex]; const answer = diagramAnswers[index] || ""; const checked = answer.trim().length > 0; return <article className="diagram-card" key={`${diagram.title}-${index}`}><strong>{diagram.title}</strong><div className="concept-flow">{diagram.nodes.map((node, nodeIndex) => <><div className={nodeIndex === diagram.blankIndex ? "concept-node blank" : "concept-node"} key={`${node}-${nodeIndex}`}>{nodeIndex === diagram.blankIndex ? <input aria-label={`${diagram.title} 빈칸`} value={answer} onChange={(event) => setDiagramAnswers((current) => ({ ...current, [index]: event.target.value }))} placeholder="빈칸" /> : node}</div>{nodeIndex < diagram.nodes.length - 1 && <span key={`arrow-${nodeIndex}`}>→</span>}</>)}</div>{checked && <p className={answer.trim() === expected ? "answer-correct" : "answer-wrong"}>{answer.trim() === expected ? "정답입니다." : `정답: ${expected}`}{diagram.explanation ? ` ${diagram.explanation}` : ""}</p>}</article>; })}</div>}
+    {materials.examples.length > 0 && <div className="custom-tool-section"><p className="section-label">예시로 설명</p><div className="example-explain-grid">{materials.examples.map((example, index) => <article key={`${example.situation}-${index}`}><span>예시 {index + 1}</span><h3>{example.situation}</h3><p>{example.explanation}</p><b>{example.takeaway}</b></article>)}</div></div>}
+  </section>;
+}
+
 type ProcessedContribution = {
   mechanicalStatus: string;
   extractedText: string | null;
@@ -629,6 +667,8 @@ function StudyScreen(props: {
   onNext: (total: number) => void;
   onClose: () => void;
   onMode: (mode: StudyMode) => void;
+  completed: boolean;
+  onRestart: () => void;
 }) {
   const modeName = modes.find((item) => item.id === props.mode)?.title ?? "학습";
   return (
@@ -638,10 +678,12 @@ function StudyScreen(props: {
         <span>{props.asset.title}</span>
         <strong>{modeName}</strong>
       </div>
+      {props.completed ? <section className="activity-panel completion-panel"><p className="eyebrow">학습 기록 저장 완료</p><h1>{modeName}을 끝냈습니다.</h1><p>마지막 단계까지 진행한 기록이 저장되었습니다. 지금 바로 다시 풀거나 자료 화면으로 돌아갈 수 있어요.</p><div className="activity-actions"><button className="secondary-button" type="button" onClick={props.onRestart}>처음부터 다시</button><button className="primary-button" type="button" onClick={props.onClose}>자료로 돌아가기</button></div></section> : <>
       {props.mode === "info" && <InfoStudy onMode={props.onMode} />}
       {props.mode === "examples" && <ExampleStudy index={props.index} revealed={props.revealed} answer={props.answer} onAnswer={props.onAnswer} onReveal={props.onReveal} onNext={props.onNext} />}
       {props.mode === "recall" && <RecallStudy index={props.index} revealed={props.revealed} answer={props.answer} confidence={props.confidence} onAnswer={props.onAnswer} onReveal={props.onReveal} onConfidence={props.onConfidence} onNext={props.onNext} />}
       {props.mode === "plan" && <PlanBuilder onStart={props.onMode} />}
+      </>}
     </main>
   );
 }
@@ -674,7 +716,7 @@ function ExampleStudy(props: { index: number; revealed: boolean; answer: string;
       {!props.revealed ? <button className="primary-button" type="button" onClick={props.onReveal}>설명 비교하기</button> : (
         <div className="reveal-panel"><span className="reveal-label">핵심 설명</span><p>{item.answer}</p><strong>{item.takeaway}</strong></div>
       )}
-      {props.revealed && <div className="activity-actions"><button className="secondary-button" type="button" onClick={() => props.onNext(examples.length)} disabled={props.index === examples.length - 1}>{props.index === examples.length - 1 ? "예시 학습 완료" : "다음 예시"} →</button></div>}
+      {props.revealed && <div className="activity-actions"><button className="secondary-button" type="button" onClick={() => props.onNext(examples.length)}>{props.index === examples.length - 1 ? "예시 학습 완료" : "다음 예시"} →</button></div>}
     </section>
   );
 }
@@ -691,7 +733,7 @@ function RecallStudy(props: { index: number; revealed: boolean; answer: string; 
         <>
           <div className="reveal-panel"><span className="reveal-label">모범 답안</span><p>{item.answer}</p><ul>{item.rubric.map((point) => <li key={point}>{point}</li>)}</ul></div>
           <div className="confidence-box"><strong>얼마나 잘 회상했나요?</strong><div>{["거의 못함", "일부 회상", "대부분 회상", "정확히 회상"].map((label, index) => <button className={props.confidence === index + 1 ? "active" : ""} type="button" key={label} onClick={() => props.onConfidence(index + 1)}>{label}</button>)}</div></div>
-          <div className="activity-actions"><button className="secondary-button" type="button" onClick={() => props.onNext(recallQuestions.length)} disabled={!props.confidence || props.index === recallQuestions.length - 1}>{props.index === recallQuestions.length - 1 ? "회상 학습 완료" : "다음 질문"} →</button></div>
+          <div className="activity-actions"><button className="secondary-button" type="button" onClick={() => props.onNext(recallQuestions.length)} disabled={!props.confidence}>{props.index === recallQuestions.length - 1 ? "회상 학습 완료" : "다음 질문"} →</button></div>
         </>
       )}
     </section>
@@ -749,6 +791,8 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
   const [textOnly, setTextOnly] = useState(false);
   const [splitQuestionSet, setSplitQuestionSet] = useState(false);
   const [createRecall, setCreateRecall] = useState(false);
+  const [customMaterials, setCustomMaterials] = useState<CustomMaterials>(() => emptyCustomMaterials());
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const [licenseConfirmed, setLicenseConfirmed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; message: string; status?: string } | null>(null);
@@ -767,6 +811,7 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
     body.set("textOnly", String(textOnly));
     body.set("splitQuestions", String(splitQuestionSet));
     body.set("createRecall", String(createRecall));
+    body.set("customMaterials", JSON.stringify(customMaterials));
     body.set("licenseConfirmed", String(licenseConfirmed));
     try {
       const response = await fetch("/api/contributions", { method: "POST", body });
@@ -791,14 +836,34 @@ function ContributionScreen({ onBack, onPublished }: { onBack: () => void; onPub
           <label className="upload-field"><span>파일</span><input type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.docx,.pptx" onChange={(event) => setFile(event.target.files?.[0] ?? null)} required /><div><strong>{file ? file.name : "파일을 선택하세요"}</strong><small>{file ? `${(file.size / 1024 / 1024).toFixed(2)}MB` : "PDF, 이미지, 문서 · 최대 8MB"}</small></div></label>
           <label className="camera-field"><span>또는 사진 촬영</span><input type="file" accept="image/png,image/jpeg,image/webp" capture="environment" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><small>휴대폰에서는 카메라 권한을 요청해 바로 촬영할 수 있습니다. 촬영한 사진도 위 파일로 선택됩니다.</small></label>
           <fieldset className="mechanical-tools"><legend>기계적 처리 도구 <small>AI 검수와 별도로 작동</small></legend><p>텍스트 파일은 바로 처리되고, 이미지·PDF는 Azure OCR로 한국어 텍스트를 추출합니다. AI 검수 공개를 선택하면 OCR은 자동으로 적용되며 AI에는 원본 파일 대신 텍스트만 전달됩니다.</p><label><input type="checkbox" checked={ocr || publishMode === "ai_review"} disabled={publishMode === "ai_review"} onChange={(event) => setOcr(event.target.checked)} /> 이미지·PDF 글자 인식(Azure OCR)</label><label><input type="checkbox" checked={textOnly} onChange={(event) => setTextOnly(event.target.checked)} /> 원본 대신 텍스트만 학습 DB에 공개</label><label><input type="checkbox" checked={splitQuestionSet} onChange={(event) => setSplitQuestionSet(event.target.checked)} /> 번호가 있는 문제를 문제별로 나누기</label><label><input type="checkbox" checked={createRecall} onChange={(event) => setCreateRecall(event.target.checked)} /> 규칙 기반 능동 회상 카드 만들기</label></fieldset>
+          <section className="materials-launcher"><div><span>직접 만든 학습 도구</span><strong>암기·회상·예시 자료 구체화</strong><p>기여 자료와 함께 공개할 학습 도구를 직접 작성합니다.</p></div><button className="secondary-button" type="button" onClick={() => setMaterialsOpen(true)}>자료 구체화 {hasCustomMaterials(customMaterials) ? "수정" : "시작"}</button></section>
           <label><span>출처와 설명</span><textarea value={sourceNote} onChange={(event) => setSourceNote(event.target.value)} placeholder="자료의 출처와 어떤 학습에 도움이 되는지 적어주세요." rows={5} /></label>
           <label className="check-row"><input type="checkbox" checked={licenseConfirmed} onChange={(event) => setLicenseConfirmed(event.target.checked)} /><span>이 자료를 공유할 권한이 있으며, {publishMode === "instant" ? "검수 없이 즉시 공개되고 크레딧이 지급되지 않는 것" : "AI가 자료를 분석하며 통과한 경우에만 공개·보상되는 것"}에 동의합니다.</span></label>
           <button className="primary-button wide" type="submit" disabled={submitting || !file || !title || !licenseConfirmed}>{submitting ? (publishMode === "instant" ? "공개하고 있어요…" : "AI 검수를 진행하고 있어요…") : (publishMode === "instant" ? "즉시 공개하기 · 0 크레딧" : "AI 검수 요청하기 · 통과 시 +20")}</button>
           {result && <div className={result.ok ? "submission-result success" : "submission-result error"}><strong>{result.ok ? "접수 완료" : "확인 필요"}</strong><p>{result.message}</p>{result.status && <span>현재 상태 · {result.status}</span>}</div>}
         </form>
       </div>
+      {materialsOpen && <CustomMaterialsDialog materials={customMaterials} onChange={setCustomMaterials} onClose={() => setMaterialsOpen(false)} />}
     </main>
   );
+}
+
+function LineItemsEditor({ value, onChange, placeholder, addLabel = "항목 추가" }: { value: string[]; onChange: (value: string[]) => void; placeholder: string; addLabel?: string }) {
+  return <div className="line-items-editor">{value.map((item, index) => <div key={index}><input value={item} placeholder={placeholder} onChange={(event) => onChange(value.map((current, currentIndex) => currentIndex === index ? event.target.value : current))} /><button type="button" aria-label="항목 삭제" onClick={() => onChange(value.filter((_, currentIndex) => currentIndex !== index))}>×</button></div>)}<button className="text-button" type="button" onClick={() => onChange([...value, ""])}>+ {addLabel}</button></div>;
+}
+
+function CustomMaterialsDialog({ materials, onChange, onClose }: { materials: CustomMaterials; onChange: (materials: CustomMaterials) => void; onClose: () => void }) {
+  const [tab, setTab] = useState<"memory" | "recall" | "examples">("memory");
+  const setRecall = (recall: CustomMaterials["recall"]) => onChange({ ...materials, recall });
+  const setShortCard = (index: number, key: "question" | "answer", value: string) => setRecall({ ...materials.recall, shortCards: materials.recall.shortCards.map((card, cardIndex) => cardIndex === index ? { ...card, [key]: value } : card) });
+  return <div className="materials-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="materials-dialog" role="dialog" aria-modal="true" aria-labelledby="materials-dialog-title"><div className="dialog-heading"><div><p className="eyebrow">자료 구체화</p><h2 id="materials-dialog-title">학습에 바로 쓰이는 자료 만들기</h2></div><button type="button" aria-label="닫기" onClick={onClose}>×</button></div><div className="material-tabs"><button type="button" className={tab === "memory" ? "active" : ""} onClick={() => setTab("memory")}>1. 암기 자료 표시</button><button type="button" className={tab === "recall" ? "active" : ""} onClick={() => setTab("recall")}>2. 회상용 키트 제작</button><button type="button" className={tab === "examples" ? "active" : ""} onClick={() => setTab("examples")}>3. 예시로 설명</button></div>
+    {tab === "memory" && <div className="material-tab-content"><p>학습자가 따로 외우면 좋은 정의·공식·판단 기준을 한 줄씩 적어 주세요.</p><label><span>암기 자료 제목</span><input value={materials.memorization.title} onChange={(event) => onChange({ ...materials, memorization: { ...materials.memorization, title: event.target.value } })} placeholder="예: 돌림힘 암기 액기스" /></label><label><span>중요 문장·정의·공식</span><LineItemsEditor value={materials.memorization.items} onChange={(items) => onChange({ ...materials, memorization: { ...materials.memorization, items } })} placeholder="예: 힘의 작용선이 회전축을 지나면 돌림힘은 0이다." addLabel="암기 항목 추가" /></label></div>}
+    {tab === "recall" && <div className="material-tab-content recall-authoring"><p>짧고 직접적인 질문과 답을 중심으로 회상 도구를 만듭니다. 비어 있는 항목은 저장되지 않습니다.</p><section><div className="authoring-title"><h3>짧은 회상 카드</h3><button className="text-button" type="button" onClick={() => setRecall({ ...materials.recall, shortCards: [...materials.recall.shortCards, { question: "", answer: "" }] })}>+ 카드 추가</button></div>{materials.recall.shortCards.map((card, index) => <article key={index} className="authoring-card"><button className="remove-card" type="button" aria-label="카드 삭제" onClick={() => setRecall({ ...materials.recall, shortCards: materials.recall.shortCards.filter((_, cardIndex) => cardIndex !== index) })}>×</button><input value={card.question} onChange={(event) => setShortCard(index, "question", event.target.value)} placeholder="짧은 질문" /><textarea value={card.answer} onChange={(event) => setShortCard(index, "answer", event.target.value)} placeholder="짧은 답" rows={2} /></article>)}</section>
+      <section><div className="authoring-title"><h3>빠른 선택 퀴즈</h3><button className="text-button" type="button" onClick={() => setRecall({ ...materials.recall, quizzes: [...materials.recall.quizzes, { question: "", options: ["", ""], answerIndex: 0, explanation: "" }] })}>+ 퀴즈 추가</button></div>{materials.recall.quizzes.map((quiz, index) => <article key={index} className="authoring-card"><button className="remove-card" type="button" aria-label="퀴즈 삭제" onClick={() => setRecall({ ...materials.recall, quizzes: materials.recall.quizzes.filter((_, quizIndex) => quizIndex !== index) })}>×</button><input value={quiz.question} onChange={(event) => setRecall({ ...materials.recall, quizzes: materials.recall.quizzes.map((current, quizIndex) => quizIndex === index ? { ...current, question: event.target.value } : current) })} placeholder="질문" /><label><span>선택지 (한 줄에 하나)</span><textarea value={quiz.options.join("\n")} onChange={(event) => setRecall({ ...materials.recall, quizzes: materials.recall.quizzes.map((current, quizIndex) => quizIndex === index ? { ...current, options: event.target.value.split("\n") } : current) })} rows={3} placeholder="선택지 1\n선택지 2" /></label><label><span>정답</span><select value={quiz.answerIndex} onChange={(event) => setRecall({ ...materials.recall, quizzes: materials.recall.quizzes.map((current, quizIndex) => quizIndex === index ? { ...current, answerIndex: Number(event.target.value) } : current) })}>{quiz.options.map((option, optionIndex) => <option value={optionIndex} key={optionIndex}>{option || `선택지 ${optionIndex + 1}`}</option>)}</select></label><textarea value={quiz.explanation} onChange={(event) => setRecall({ ...materials.recall, quizzes: materials.recall.quizzes.map((current, quizIndex) => quizIndex === index ? { ...current, explanation: event.target.value } : current) })} rows={2} placeholder="정답 설명 (선택)" /></article>)}</section>
+      <section><div className="authoring-title"><h3>순서 맞추기</h3><button className="text-button" type="button" onClick={() => setRecall({ ...materials.recall, sequences: [...materials.recall.sequences, { prompt: "", items: ["", ""] }] })}>+ 순서 자료 추가</button></div>{materials.recall.sequences.map((sequence, index) => <article key={index} className="authoring-card"><button className="remove-card" type="button" aria-label="순서 자료 삭제" onClick={() => setRecall({ ...materials.recall, sequences: materials.recall.sequences.filter((_, sequenceIndex) => sequenceIndex !== index) })}>×</button><input value={sequence.prompt} onChange={(event) => setRecall({ ...materials.recall, sequences: materials.recall.sequences.map((current, sequenceIndex) => sequenceIndex === index ? { ...current, prompt: event.target.value } : current) })} placeholder="예: 다음 과정을 올바른 순서로 배열하세요." /><label><span>정답 순서 (한 줄에 하나)</span><textarea value={sequence.items.join("\n")} onChange={(event) => setRecall({ ...materials.recall, sequences: materials.recall.sequences.map((current, sequenceIndex) => sequenceIndex === index ? { ...current, items: event.target.value.split("\n") } : current) })} rows={3} /></label></article>)}</section>
+      <section><div className="authoring-title"><h3>개념 구조 빈칸 채우기</h3><button className="text-button" type="button" onClick={() => setRecall({ ...materials.recall, diagrams: [...materials.recall.diagrams, { title: "", nodes: ["", ""], blankIndex: 0, explanation: "" }] })}>+ 구조 추가</button></div>{materials.recall.diagrams.map((diagram, index) => <article key={index} className="authoring-card"><button className="remove-card" type="button" aria-label="구조 삭제" onClick={() => setRecall({ ...materials.recall, diagrams: materials.recall.diagrams.filter((_, diagramIndex) => diagramIndex !== index) })}>×</button><input value={diagram.title} onChange={(event) => setRecall({ ...materials.recall, diagrams: materials.recall.diagrams.map((current, diagramIndex) => diagramIndex === index ? { ...current, title: event.target.value } : current) })} placeholder="구조 제목" /><label><span>개념 상자 순서 (한 줄에 하나)</span><textarea value={diagram.nodes.join("\n")} onChange={(event) => setRecall({ ...materials.recall, diagrams: materials.recall.diagrams.map((current, diagramIndex) => diagramIndex === index ? { ...current, nodes: event.target.value.split("\n"), blankIndex: 0 } : current) })} rows={3} /></label><label><span>빈칸으로 만들 상자</span><select value={diagram.blankIndex} onChange={(event) => setRecall({ ...materials.recall, diagrams: materials.recall.diagrams.map((current, diagramIndex) => diagramIndex === index ? { ...current, blankIndex: Number(event.target.value) } : current) })}>{diagram.nodes.map((node, nodeIndex) => <option value={nodeIndex} key={nodeIndex}>{node || `상자 ${nodeIndex + 1}`}</option>)}</select></label><textarea value={diagram.explanation} onChange={(event) => setRecall({ ...materials.recall, diagrams: materials.recall.diagrams.map((current, diagramIndex) => diagramIndex === index ? { ...current, explanation: event.target.value } : current) })} rows={2} placeholder="정답 설명 (선택)" /></article>)}</section></div>}
+    {tab === "examples" && <div className="material-tab-content"><p>구체적인 상황과 설명을 연결해 개념이 언제 쓰이는지 보여 주세요.</p><div className="authoring-title"><h3>예시 상황</h3><button className="text-button" type="button" onClick={() => onChange({ ...materials, examples: [...materials.examples, { situation: "", explanation: "", takeaway: "" }] })}>+ 예시 추가</button></div>{materials.examples.map((example, index) => <article key={index} className="authoring-card"><button className="remove-card" type="button" aria-label="예시 삭제" onClick={() => onChange({ ...materials, examples: materials.examples.filter((_, exampleIndex) => exampleIndex !== index) })}>×</button><textarea value={example.situation} onChange={(event) => onChange({ ...materials, examples: materials.examples.map((current, exampleIndex) => exampleIndex === index ? { ...current, situation: event.target.value } : current) })} rows={2} placeholder="예시 상황" /><textarea value={example.explanation} onChange={(event) => onChange({ ...materials, examples: materials.examples.map((current, exampleIndex) => exampleIndex === index ? { ...current, explanation: event.target.value } : current) })} rows={3} placeholder="이 상황에서의 부가 설명" /><input value={example.takeaway} onChange={(event) => onChange({ ...materials, examples: materials.examples.map((current, exampleIndex) => exampleIndex === index ? { ...current, takeaway: event.target.value } : current) })} placeholder="기억할 핵심 문장" /></article>)}</div>}
+    <div className="dialog-actions"><span>작성한 내용은 자료와 함께 공개됩니다.</span><button className="primary-button" type="button" onClick={onClose}>저장하고 닫기</button></div></section></div>;
 }
 
 type AccountData = {
