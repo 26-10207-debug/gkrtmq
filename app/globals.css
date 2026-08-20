@@ -273,6 +273,11 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .auth-options .primary-button { margin: 0; border-color: var(--green); background: var(--green); color: white; }
 .auth-options button:disabled { cursor: not-allowed; opacity: .62; }
 .auth-help { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.auth-form { display: grid; gap: 14px; margin-top: 20px; }
+.auth-form label { display: grid; gap: 7px; font-size: 13px; font-weight: 800; }
+.auth-form input { width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--page); color: var(--text); font: inherit; }
+.auth-message { margin: 14px 0 0; color: var(--red); font-size: 13px; }
+.auth-mode { justify-self: start; margin-top: 18px; padding: 0; border: 0; background: transparent; color: var(--green); font: inherit; font-size: 13px; font-weight: 800; cursor: pointer; }
 .search-result { display: grid; gap: 8px; }
 .search-edit { display: grid; gap: 10px; margin: -2px 18px 6px 76px; padding: 0 0 14px; }
 .search-edit .record-edit-form { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }

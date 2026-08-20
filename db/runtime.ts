@@ -6,6 +6,10 @@ export type RuntimeEnv = {
   OPENAI_API_KEY?: string;
   AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT?: string;
   AZURE_DOCUMENT_INTELLIGENCE_KEY?: string;
+  BETTER_AUTH_SECRET?: string;
+  BETTER_AUTH_URL?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
 };
 
 export function getRuntimeEnv(): RuntimeEnv {
@@ -20,6 +24,56 @@ export function ensureSchema() {
   const { DB } = getRuntimeEnv();
   initialization = (async () => {
     await DB.batch([
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS auth_user (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          email_verified INTEGER NOT NULL DEFAULT 0,
+          image TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS auth_session (
+          id TEXT PRIMARY KEY,
+          expires_at INTEGER NOT NULL,
+          token TEXT NOT NULL UNIQUE,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          ip_address TEXT,
+          user_agent TEXT,
+          user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE
+        )
+      `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS auth_account (
+          id TEXT PRIMARY KEY,
+          account_id TEXT NOT NULL,
+          provider_id TEXT NOT NULL,
+          user_id TEXT NOT NULL REFERENCES auth_user(id) ON DELETE CASCADE,
+          access_token TEXT,
+          refresh_token TEXT,
+          id_token TEXT,
+          access_token_expires_at INTEGER,
+          refresh_token_expires_at INTEGER,
+          scope TEXT,
+          password TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS auth_verification (
+          id TEXT PRIMARY KEY,
+          identifier TEXT NOT NULL,
+          value TEXT NOT NULL,
+          expires_at INTEGER NOT NULL,
+          created_at INTEGER,
+          updated_at INTEGER
+        )
+      `),
       DB.prepare(`
         CREATE TABLE IF NOT EXISTS contributions (
           id TEXT PRIMARY KEY,
@@ -113,6 +167,10 @@ export function ensureSchema() {
     }
 
     await DB.batch([
+      DB.prepare("CREATE INDEX IF NOT EXISTS auth_session_user_idx ON auth_session (user_id)"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS auth_account_user_idx ON auth_account (user_id)"),
+      DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS auth_account_provider_unique_idx ON auth_account (provider_id, account_id)"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS auth_verification_identifier_idx ON auth_verification (identifier)"),
       DB.prepare(`
         CREATE INDEX IF NOT EXISTS contributions_status_created_idx
         ON contributions (status, created_at DESC)

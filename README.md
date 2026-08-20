@@ -25,3 +25,25 @@ pnpm dev
 ```
 
 OpenAI 기능을 시험하려면 `.env`에 `OPENAI_API_KEY`를 설정하세요.
+
+## 외부 로그인
+
+공개 서비스에서는 이메일·비밀번호 로그인을 사용할 수 있습니다. 배포 환경에는 고정된 인증 비밀값과 실제 서비스 URL을 설정해야 합니다.
+
+```env
+BETTER_AUTH_SECRET=충분히-길고-무작위인-비밀값
+BETTER_AUTH_URL=https://learning-db-physics.loyal-skink-9354.chatgpt.site
+```
+
+Google 로그인은 Google Cloud Console에서 OAuth 웹 애플리케이션을 만든 뒤 다음 값을 배포 환경에 설정하면 활성화됩니다.
+
+```env
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+```
+
+Google 승인된 리디렉션 URI는 다음 주소입니다.
+
+```
+https://learning-db-physics.loyal-skink-9354.chatgpt.site/api/auth/callback/google
+```

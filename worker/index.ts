@@ -7,6 +7,12 @@ interface Env {
   DB: D1Database;
   UPLOADS: R2Bucket;
   OPENAI_API_KEY?: string;
+  AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT?: string;
+  AZURE_DOCUMENT_INTELLIGENCE_KEY?: string;
+  BETTER_AUTH_SECRET?: string;
+  BETTER_AUTH_URL?: string;
+  GOOGLE_CLIENT_ID?: string;
+  GOOGLE_CLIENT_SECRET?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {

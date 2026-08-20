@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AuthPanel } from "./AuthPanel";
+import { AuthPanel, SignOutButton } from "./AuthPanel";
 
 type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing";
 type StudyMode = "info" | "examples" | "recall" | "plan";
@@ -32,7 +32,7 @@ type Asset = {
   mechanicalError?: string | null;
 };
 
-type AccountUser = { displayName: string; email: string };
+type AccountUser = { displayName: string; email: string; authMethod: "chatgpt" | "app" };
 type ContributionRecord = {
   id: string;
   title: string;
@@ -775,7 +775,7 @@ function AccountScreen({ user, onBack, onPricing, onUpdated }: { user: AccountUs
       <section className="account-hero">
         <div className="account-avatar">{user?.displayName?.slice(0, 1).toUpperCase() || "?"}</div>
         <div><p className="eyebrow">내 계정</p><h1>{user?.displayName || "로그인 정보 없음"}</h1><p>{user?.email || "배포된 사이트에서 로그인하면 계정이 연결됩니다."}</p></div>
-        {user && <a className="secondary-button" href="/signout-with-chatgpt?return_to=/">로그아웃</a>}
+        {user && <SignOutButton authMethod={user.authMethod} />}
       </section>
       <section className="credit-wallet"><div><span>보유 크레딧</span><strong>{data?.creditBalance ?? 0}<small> C</small></strong><p>AI 검수 통과 자료를 기여하면 20크레딧을 받습니다.</p></div><button className="primary-button" type="button" onClick={onPricing}>크레딧·요금제 보기</button></section>
       <section className="account-stats"><div><span>공개한 자료</span><strong>{data?.stats.contributionCount ?? 0}</strong></div><div><span>누적 조회</span><strong>{(data?.stats.totalViews ?? 0).toLocaleString("ko-KR")}</strong></div><div><span>계정 상태</span><strong>{user ? "연결됨" : "로컬 미리보기"}</strong></div></section>

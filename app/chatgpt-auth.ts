@@ -1,11 +1,13 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { getAuth } from "@/lib/auth";
 
 export type ChatGPTUser = {
   userId: string;
   displayName: string;
   email: string;
   fullName: string | null;
+  authMethod: "chatgpt" | "app";
 };
 
 const USER_ID_HEADER = "oai-authenticated-user-id";
@@ -20,6 +22,16 @@ const CALLBACK_PATH = "/callback";
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
+  const session = await getAuth().api.getSession({ headers: requestHeaders });
+  if (session?.user) {
+    return {
+      userId: session.user.id,
+      displayName: session.user.name || session.user.email,
+      email: session.user.email,
+      fullName: session.user.name || null,
+      authMethod: "app",
+    };
+  }
   const userId = requestHeaders.get(USER_ID_HEADER);
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!userId || !email) return null;
@@ -36,6 +48,7 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
     displayName: fullName ?? email,
     email,
     fullName,
+    authMethod: "chatgpt",
   };
 }
 
