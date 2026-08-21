@@ -541,7 +541,7 @@ function SearchScreen(props: {
         <div className="result-list">
           {props.assets.map((asset, index) => (
             <div className="search-result" key={asset.id}>
-            <button className="result-card" type="button" onClick={() => props.onOpen(asset)}>
+            <button className={asset.id === "torque-examples" ? "result-card core-learning-card" : "result-card"} type="button" onClick={() => props.onOpen(asset)}>
               <span className="file-number">{String(index + 1).padStart(2, "0")}</span>
               <span className="file-copy">
                 <span className="file-title">{asset.title}</span>

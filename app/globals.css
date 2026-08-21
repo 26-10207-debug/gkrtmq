@@ -706,3 +706,248 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .example-contrast { background: #e3f3eb; color: #07523d !important; }
 .example-misconception b, .example-contrast b { color: inherit !important; font-size: 11px; }
 @media (max-width: 720px) { .flash-card-grid { grid-template-columns: 1fr; } .concept-map-stage { height: 320px; } .source-picker { padding: 13px; } .sequence-card-v2 li { grid-template-columns: 26px 1fr; } .sequence-card-v2 li div { grid-column: 2; } }
+
+/* Shared site canvas: the browser-start graphic now frames every view. */
+:root {
+  --page: #ffffff;
+  --surface: #ffffff;
+  --surface-soft: #ffffff;
+  --green-soft: #ffffff;
+  --pink: #ef1766;
+  --shadow: 4px 5px 0 rgba(16, 33, 28, .88);
+}
+
+body { background: var(--surface-deep); }
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--surface-deep);
+}
+.app-shell::before,
+.app-shell::after {
+  position: absolute;
+  z-index: -1;
+  display: block;
+  width: 52vmax;
+  height: 52vmax;
+  border-radius: 50%;
+  content: "";
+  background: var(--pink);
+  animation: shared-orbit 58s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+.app-shell::before {
+  top: -34vmax;
+  left: -20vmax;
+  box-shadow: 88vw 73vh 0 -4vmax var(--pink), 25vw 124vh 0 -12vmax var(--pink);
+}
+.app-shell::after {
+  right: -33vmax;
+  bottom: -42vmax;
+  width: 47vmax;
+  height: 47vmax;
+  background: #0a5c47;
+  animation-delay: -21s;
+}
+@keyframes shared-orbit {
+  from { transform: translate3d(-1.5%, -1%, 0) scale(1); }
+  to { transform: translate3d(2.5%, 2%, 0) scale(1.055); }
+}
+.app-shell > :not(.home-hero) { position: relative; z-index: 1; }
+
+/* Navigation and page chrome sit directly on the shared dark canvas. */
+.topbar:not(.topbar-home),
+.detail-main,
+.study-main,
+.contribution-main,
+.account-main,
+.pricing-main { color: #fffdf9; }
+.topbar:not(.topbar-home) .pricing-link,
+.topbar:not(.topbar-home) .back-button,
+.detail-main > .back-button,
+.study-main > .back-button,
+.contribution-main > .back-button,
+.account-main > .back-button,
+.pricing-main > .back-button { color: #d7e8df; }
+.topbar:not(.topbar-home) .pricing-link:hover,
+.topbar:not(.topbar-home) .back-button:hover,
+.detail-main > .back-button:hover,
+.study-main > .back-button:hover,
+.contribution-main > .back-button:hover,
+.account-main > .back-button:hover,
+.pricing-main > .back-button:hover { color: #ffffff; }
+.topbar:not(.topbar-home) .contribute-button { color: #fffdf9; }
+.topbar:not(.topbar-home) .account-button.account-button-compact > span {
+  border-color: rgba(255,255,255,.8);
+  background: rgba(255,255,255,.13);
+  color: #fffdf9;
+}
+
+/* Keep the existing cards, but make every reading and input surface white. */
+.detail-hero,
+.reader-panel,
+.activity-panel,
+.plan-panel,
+.contribution-form,
+.account-hero,
+.account-stats > div,
+.account-records > article,
+.auth-panel,
+.checkout-demo,
+.plan-cards article,
+.uploaded-file-card,
+.mechanical-result,
+.custom-materials-panel,
+.materials-launcher,
+.materials-dialog,
+.filter-panel,
+.result-card,
+.discovery-card:not(.priority-card),
+.mode-card,
+.custom-card-grid article,
+.example-explain-grid article,
+.quiz-card,
+.sequence-card,
+.diagram-card,
+.flash-card,
+.source-picker,
+.concept-map-fallback { background: #ffffff; color: var(--text); }
+.detail-stats,
+.secondary-button,
+.account-button,
+.auth-options > *,
+.thinking-field textarea,
+.contribution-form input,
+.contribution-form textarea,
+.record-edit-form input,
+.record-edit-form textarea,
+.auth-form input,
+.material-tab-content input,
+.material-tab-content textarea,
+.material-tab-content select,
+.fake-payment-fields input,
+.related-row button,
+.tag,
+.filter-button,
+.sort-control select,
+.quiz-card button,
+.sequence-options button,
+.sequence-selected button,
+.sequence-card-v2 li,
+.sequence-card-v2 li button,
+.selected-sources > div,
+.source-picker textarea,
+.extracted-text,
+.recall-card-list details,
+.upload-field > div { background: #ffffff; }
+.mechanical-tools,
+.camera-field,
+.authoring-card,
+.search-edit .record-edit-form,
+.sequence-selected { background: rgba(255,255,255,.94); }
+.dialog-heading,
+.material-tabs,
+.dialog-actions { background: #ffffff; }
+.detail-hero,
+.reader-panel,
+.activity-panel,
+.plan-panel,
+.contribution-form,
+.account-hero,
+.account-stats > div,
+.account-records > article,
+.auth-panel,
+.checkout-demo,
+.plan-cards article,
+.uploaded-file-card,
+.mechanical-result,
+.custom-materials-panel,
+.materials-launcher,
+.materials-dialog,
+.filter-panel,
+.result-card,
+.discovery-card:not(.priority-card),
+.mode-card,
+.custom-card-grid article,
+.example-explain-grid article,
+.quiz-card,
+.sequence-card,
+.diagram-card,
+.flash-card,
+.source-picker,
+.concept-map-fallback { border-color: var(--line); }
+
+/* Bare detail text needs a light treatment against the shared canvas. */
+.detail-main > .overview-grid,
+.detail-main > .mode-section,
+.study-main > .study-topline,
+.pricing-hero { color: #fffdf9; }
+.detail-main > .overview-grid .section-label,
+.detail-main > .overview-grid .lead-copy,
+.detail-main > .overview-grid .knowledge-list span,
+.detail-main > .mode-section .section-heading > p,
+.study-main > .study-topline,
+.pricing-hero > p:not(.eyebrow) { color: #d7e8df; }
+.detail-main > .overview-grid .knowledge-list strong,
+.detail-main > .mode-section .section-heading h2,
+.detail-main > .overview-grid h2,
+.pricing-hero h1 { color: #fffdf9; }
+.study-main > .study-topline strong { border-color: #fffdf9; background: #ffffff; color: var(--green-dark); }
+
+/* Pink is reserved for decisive actions, active choices, and core learning material. */
+.primary-button { border-color: var(--pink); background: var(--pink); box-shadow: 3px 3px 0 var(--line); }
+.primary-button:hover:not(:disabled) { background: #cf0d51; }
+.contribute-button:hover { background: var(--pink); border-color: var(--pink); }
+.filter-button.active,
+.publish-option.active,
+.engine-choice button.active,
+.confidence-box button.active,
+.choice-group button.active,
+.mechanical-tabs button.active,
+.payment-methods button.active,
+.quiz-card button.active { border-color: var(--pink); background: var(--pink); color: #ffffff; }
+.publish-option.reward > strong,
+.mechanical-heading > span,
+.generated-heading span,
+.generated-heading > strong,
+.record-meta > b,
+.credit-history article > b,
+.record-edit-button,
+.auth-mode,
+.text-button,
+.file-metrics strong { color: var(--pink); }
+.mechanical-tools input,
+.check-row input { accent-color: var(--pink); }
+.tag.accent,
+.file-number,
+.mode-number,
+.card-icon { border-color: var(--pink); background: #ffffff; color: var(--pink); }
+.core-learning-card { border-color: var(--pink); box-shadow: 5px 6px 0 var(--pink); }
+.core-learning-card .file-number { background: var(--pink); color: #ffffff; }
+.core-learning-card .file-title,
+.core-learning-card .card-arrow { color: var(--pink); }
+
+/* Replace the remaining pastel panels with white or transparent surfaces. */
+.reveal-panel,
+.example-misconception,
+.example-contrast,
+.document-read-status,
+.document-read-status.warning,
+.mechanical-result.pending,
+.mechanical-result.error,
+.upload-notice,
+.demo-banner,
+.submission-result.error,
+.status-pill.awaiting_ai,
+.status-pill.analyzing,
+.status-pill.review_rejected,
+.status-pill.review_failed { background: #ffffff; }
+.reveal-panel { border: 1px solid var(--line); }
+.example-misconception,
+.example-contrast { border: 1px solid var(--line); }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell::before,
+  .app-shell::after { animation: none; }
+}
