@@ -1266,3 +1266,83 @@ select:focus-visible { outline: 3px solid rgba(239, 23, 102, .36); outline-offse
   .primary-button,
   .secondary-button { transform: none !important; transition: none !important; }
 }
+
+/* Multi-file contribution and inline image reading. */
+.upload-selection-preview {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+.upload-selection-preview article {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid var(--preview-line);
+  border-radius: 14px;
+  background: #ffffff;
+}
+.upload-selection-preview img,
+.upload-preview-file { display: block; width: 100%; height: 112px; }
+.upload-selection-preview img { object-fit: cover; background: #edf1ef; }
+.upload-preview-file { display: grid; place-items: center; align-content: center; gap: 4px; background: var(--preview-cream); color: var(--green-dark); }
+.upload-preview-file span { font-size: 10px; font-weight: 800; letter-spacing: .08em; }
+.upload-selection-preview article > div:last-child { display: grid; gap: 3px; padding: 9px; }
+.upload-selection-preview article > div:last-child strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.upload-selection-preview article > div:last-child small { color: var(--muted); font-size: 11px; }
+.upload-selection-preview article > button {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 34, 25, .78);
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+.document-read-list { display: grid; gap: 7px; }
+.document-read-list .document-read-status { display: grid; grid-template-columns: minmax(0, auto) 1fr; gap: 8px; margin: 0; }
+.document-read-list .document-read-status strong { overflow: hidden; max-width: 180px; text-overflow: ellipsis; white-space: nowrap; }
+
+.attachment-preview {
+  display: grid;
+  gap: 22px;
+  margin-top: 20px;
+  padding: clamp(22px, 4vw, 42px);
+  border: 1px solid var(--preview-line);
+  border-radius: 30px;
+  background: #ffffff;
+  box-shadow: var(--preview-shadow);
+}
+.attachment-preview-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.attachment-preview-heading h2 { margin: 4px 0 0; font-size: clamp(26px, 3vw, 38px); }
+.attachment-preview-heading > span { display: grid; min-width: 42px; height: 28px; place-items: center; border-radius: 999px; background: var(--pink); color: #ffffff; font-size: 12px; font-weight: 800; }
+.full-image-grid { display: grid; gap: 18px; }
+.full-image-grid figure { overflow: hidden; margin: 0; border: 1px solid var(--preview-line); border-radius: 18px; background: #edf1ef; }
+.full-image-grid img { display: block; width: 100%; height: auto; background: #edf1ef; }
+.full-image-grid figcaption { padding: 10px 13px; border-top: 1px solid var(--preview-line); background: #ffffff; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.attachment-file-list { display: grid; gap: 9px; }
+.attachment-file-list a { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--preview-line); border-radius: 14px; color: var(--text); text-decoration: none; }
+.attachment-file-list a:hover { border-color: var(--pink); }
+.attachment-file-list span { display: grid; height: 32px; place-items: center; border-radius: 9px; background: var(--preview-cream); color: var(--pink); font-size: 10px; font-weight: 800; }
+.attachment-file-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-file-list small { color: var(--pink); font-weight: 800; }
+
+/* The source chips are intentionally compact: they are confirmation, not the learning material itself. */
+.selected-sources { gap: 5px; }
+.selected-sources > div { min-height: 28px; padding: 5px 8px; border-radius: 8px; }
+.selected-sources span { font-size: 10px; line-height: 1.25; }
+.selected-sources button { min-width: 18px; padding: 0; font-size: 16px; line-height: 1; }
+
+@media (max-width: 620px) {
+  .upload-selection-preview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .attachment-preview { padding: 22px 16px; border-radius: 22px; }
+  .attachment-file-list a { grid-template-columns: 40px minmax(0, 1fr); }
+  .attachment-file-list small { grid-column: 2; }
+}

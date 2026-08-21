@@ -3,8 +3,11 @@ import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { structureContribution } from "@/lib/learning-ai";
 import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
 import { customMaterialsForReview, hasImageSelection, normalizeCustomMaterials } from "@/lib/custom-materials";
+import { publicAttachments, StoredAttachment } from "@/lib/contribution-attachments";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+const MAX_UPLOAD_COUNT = 5;
+const MAX_TOTAL_UPLOAD_BYTES = 32 * 1024 * 1024;
 const REVIEW_REWARD = 20;
 const ALLOWED_TYPES = new Set([
   "application/pdf",
@@ -27,7 +30,33 @@ const contributionSelect = `
          questions_json AS questionsJson, recall_json AS recallJson,
          text_only AS textOnly, mechanical_error AS mechanicalError,
          custom_materials_json AS customMaterialsJson,
+         attachments_json AS attachmentsJson,
          created_at AS createdAt`;
+
+function contributionForClient(row: Record<string, unknown>) {
+  const attachments = (() => {
+    try {
+      const parsed = JSON.parse(String(row.attachmentsJson || "[]"));
+      if (Array.isArray(parsed)) return parsed.filter((item): item is StoredAttachment => Boolean(item && typeof item === "object" && typeof (item as StoredAttachment).originalName === "string" && typeof (item as StoredAttachment).contentType === "string" && typeof (item as StoredAttachment).objectKey === "string"));
+    } catch {
+      // Records created before multi-file support use the original file columns.
+    }
+    return [{ originalName: String(row.originalName || "파일"), contentType: String(row.contentType || "application/octet-stream"), objectKey: "", size: 0 }];
+  })();
+  const { attachmentsJson: _attachmentsJson, ...contribution } = row;
+  return { ...contribution, attachments: publicAttachments(attachments) };
+}
+
+function providedTextsFromForm(form: FormData) {
+  const fallback = String(form.get("extractedText") ?? "").trim().slice(0, 100_000);
+  try {
+    const parsed = JSON.parse(String(form.get("extractedTexts") ?? "[]"));
+    if (Array.isArray(parsed)) return parsed.map((value) => typeof value === "string" ? value.trim().slice(0, 100_000) : "");
+  } catch {
+    // The legacy extractedText value is still accepted.
+  }
+  return [fallback];
+}
 
 export async function GET(request: Request) {
   await ensureSchema();
@@ -43,7 +72,7 @@ export async function GET(request: Request) {
       ? await DB.prepare(`${contributionSelect}${mineProjection} FROM contributions WHERE status IN ('published', 'published_ai') ORDER BY created_at DESC LIMIT 100`).bind(user.userId).all()
       : await DB.prepare(`${contributionSelect}${mineProjection} FROM contributions WHERE status IN ('published', 'published_ai') ORDER BY created_at DESC LIMIT 100`).all();
 
-  return Response.json({ contributions: result.results });
+  return Response.json({ contributions: result.results.map((item) => contributionForClient(item as Record<string, unknown>)) });
 }
 
 export async function POST(request: Request) {
@@ -52,10 +81,12 @@ export async function POST(request: Request) {
   if (!user) return Response.json({ error: "자료를 올리려면 로그인이 필요합니다." }, { status: 401 });
 
   const form = await request.formData();
-  const file = form.get("file");
+  const files = form.getAll("files").filter((value): value is File => value instanceof File);
+  const legacyFile = form.get("file");
+  if (!files.length && legacyFile instanceof File) files.push(legacyFile);
   const title = String(form.get("title") ?? "").trim();
   const sourceNote = String(form.get("sourceNote") ?? "").trim();
-  const providedText = String(form.get("extractedText") ?? "").trim().slice(0, 100_000);
+  const providedTexts = providedTextsFromForm(form);
   let customMaterials;
   try {
     customMaterials = normalizeCustomMaterials(String(form.get("customMaterials") ?? "{}"));
@@ -71,31 +102,35 @@ export async function POST(request: Request) {
     createRecall: form.get("createRecall") === "true",
   };
 
-  if (!(file instanceof File) || !title) return Response.json({ error: "제목과 파일이 필요합니다." }, { status: 400 });
+  if (!files.length || !title) return Response.json({ error: "제목과 1개 이상의 파일이 필요합니다." }, { status: 400 });
+  if (files.length > MAX_UPLOAD_COUNT) return Response.json({ error: `한 자료에는 최대 ${MAX_UPLOAD_COUNT}개 파일까지 올릴 수 있습니다.` }, { status: 413 });
   if (!licenseConfirmed) return Response.json({ error: "기여 권한과 선택한 공개 방식에 동의해야 합니다." }, { status: 400 });
   if (mechanicalOptions.textOnly && hasImageSelection(customMaterials)) return Response.json({ error: "이미지에서 선택한 암기 영역을 공개하려면 원본 공개를 유지해야 합니다." }, { status: 400 });
-  if (file.size > MAX_UPLOAD_BYTES) return Response.json({ error: "현재는 파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
-  if (!ALLOWED_TYPES.has(file.type)) return Response.json({ error: "지원하지 않는 파일 형식입니다." }, { status: 415 });
+  if (files.some((file) => file.size > MAX_UPLOAD_BYTES)) return Response.json({ error: "현재는 파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
+  if (files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_UPLOAD_BYTES) return Response.json({ error: "한 자료의 전체 파일 용량은 32MB까지입니다." }, { status: 413 });
+  if (files.some((file) => !ALLOWED_TYPES.has(file.type))) return Response.json({ error: "지원하지 않는 파일 형식이 포함되어 있습니다." }, { status: 415 });
 
   const runtime = getRuntimeEnv();
   const id = crypto.randomUUID();
-  const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
-  const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${safeName}`;
-  const bytes = await file.arrayBuffer();
+  const attachments: StoredAttachment[] = await Promise.all(files.map(async (file, index) => {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
+    const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${index}-${safeName}`;
+    const bytes = await file.arrayBuffer();
+    await runtime.UPLOADS.put(objectKey, bytes, {
+      httpMetadata: { contentType: file.type },
+      customMetadata: { contributionId: id, originalName: file.name, ownerId: user.userId, publishMode, attachmentIndex: String(index) },
+    });
+    return { originalName: file.name, contentType: file.type, objectKey, size: file.size };
+  }));
   const effectiveMechanicalOptions: MechanicalOptions = {
     ...mechanicalOptions,
     // AI 검수에는 원본 이미지·파일을 전달하지 않고, 추출 텍스트만 전달한다.
-    ocr: mechanicalOptions.ocr || (publishMode === "ai_review" && !providedText),
+    ocr: mechanicalOptions.ocr || (publishMode === "ai_review" && providedTexts.some((text, index) => !text && Boolean(files[index]))),
   };
-  const hasMechanicalTools = Boolean(providedText) || Object.values(effectiveMechanicalOptions).some(Boolean);
+  const hasMechanicalTools = providedTexts.some(Boolean) || Object.values(effectiveMechanicalOptions).some(Boolean);
   const initialStatus = publishMode === "ai_review"
-    ? providedText ? "mechanical_processing" : "ocr_processing"
+    ? "mechanical_processing"
     : mechanicalOptions.textOnly ? "mechanical_processing" : "published";
-
-  await runtime.UPLOADS.put(objectKey, bytes, {
-    httpMetadata: { contentType: file.type },
-    customMetadata: { contributionId: id, originalName: file.name, ownerId: user.userId, publishMode },
-  });
 
   await runtime.DB.batch([
     runtime.DB.prepare(`
@@ -106,25 +141,25 @@ export async function POST(request: Request) {
     runtime.DB.prepare(`
       INSERT INTO contributions
         (id, title, original_name, content_type, object_key, source_note, status,
-         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status, custom_materials_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, file.name, file.type, objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials)),
+         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status, custom_materials_json, attachments_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, title, attachments[0].originalName, attachments[0].contentType, attachments[0].objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials), JSON.stringify(attachments)),
   ]);
 
-  const mechanical = await processMechanically({
-    input: effectiveMechanicalOptions,
-    bytes,
-    contentType: file.type,
-    filename: file.name,
-    providedText,
-    azureEndpoint: runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT,
-    azureApiKey: runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY,
-  });
-  const mechanicalStatus = hasMechanicalTools ? mechanical.status : "none";
-  const textOnly = mechanicalOptions.textOnly && mechanical.status === "completed";
+  const mechanicalResults = await Promise.all(files.map(async (file, index) => processMechanically({
+    input: { ...mechanicalOptions, ocr: mechanicalOptions.ocr || (publishMode === "ai_review" && !providedTexts[index]) },
+    bytes: await file.arrayBuffer(), contentType: file.type, filename: file.name, providedText: providedTexts[index],
+    azureEndpoint: runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT, azureApiKey: runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY,
+  })));
+  const mechanicalStatus = !hasMechanicalTools ? "none" : mechanicalResults.some((result) => result.status === "failed") ? "failed" : mechanicalResults.some((result) => result.status === "awaiting_ocr") ? "awaiting_ocr" : "completed";
+  const extractedText = mechanicalResults.map((result, index) => result.text ? `--- ${files[index].name} ---\n${result.text}` : "").filter(Boolean).join("\n\n").slice(0, 100_000);
+  const questions = mechanicalResults.flatMap((result) => result.questions).slice(0, 100).map((question, index) => ({ ...question, number: index + 1 }));
+  const recallCards = mechanicalResults.flatMap((result) => result.recallCards).slice(0, 30);
+  const mechanicalError = mechanicalResults.map((result) => result.error).filter(Boolean).join(" ").slice(0, 500) || null;
+  const textOnly = mechanicalOptions.textOnly && mechanicalStatus === "completed";
   const instantStatus = publishMode === "instant"
     ? mechanicalOptions.textOnly
-      ? mechanical.status === "completed" ? "published" : mechanical.status === "awaiting_ocr" ? "awaiting_ocr" : "mechanical_failed"
+      ? mechanicalStatus === "completed" ? "published" : mechanicalStatus === "awaiting_ocr" ? "awaiting_ocr" : "mechanical_failed"
       : "published"
     : initialStatus;
 
@@ -136,22 +171,22 @@ export async function POST(request: Request) {
   `).bind(
     instantStatus,
     mechanicalStatus,
-    mechanical.text || null,
-    mechanical.questions.length ? JSON.stringify(mechanical.questions) : null,
-    mechanical.recallCards.length ? JSON.stringify(mechanical.recallCards) : null,
+    extractedText || null,
+    questions.length ? JSON.stringify(questions) : null,
+    recallCards.length ? JSON.stringify(recallCards) : null,
     textOnly ? 1 : 0,
-    mechanical.error?.slice(0, 500) ?? null,
+    mechanicalError,
     id,
   ).run();
 
   const baseContribution = {
-    id, title, originalName: file.name, contentType: file.type, sourceNote,
+    id, title, originalName: attachments[0].originalName, contentType: attachments[0].contentType, sourceNote,
     ownerDisplayName: user.displayName, viewCount: 0, publishMode,
     creditsAwarded: 0, createdAt: new Date().toISOString(), isMine: 1,
-    mechanicalStatus, extractedTextPreview: mechanical.text.slice(0, 1200),
-    questionsJson: mechanical.questions.length ? JSON.stringify(mechanical.questions) : null,
-    recallJson: mechanical.recallCards.length ? JSON.stringify(mechanical.recallCards) : null,
-    textOnly: textOnly ? 1 : 0, mechanicalError: mechanical.error ?? null,
+    mechanicalStatus, extractedTextPreview: extractedText.slice(0, 1200),
+    questionsJson: questions.length ? JSON.stringify(questions) : null,
+    recallJson: recallCards.length ? JSON.stringify(recallCards) : null,
+    textOnly: textOnly ? 1 : 0, mechanicalError, attachments: publicAttachments(attachments),
     customMaterialsJson: JSON.stringify(customMaterials),
   };
 
@@ -160,20 +195,20 @@ export async function POST(request: Request) {
       ? textOnly
         ? "원본을 공개하지 않고 텍스트 기반 학습 자료로 저장했습니다."
         : "자료가 즉시 공개되었습니다. 즉시 공개 자료에는 크레딧이 지급되지 않습니다."
-      : mechanical.status === "awaiting_ocr"
+      : mechanicalStatus === "awaiting_ocr"
         ? "텍스트 전용 저장을 위해 OCR 대기열에 보관했습니다. OCR 연결 후 텍스트만 공개됩니다."
-        : `기계적 처리에 실패해 자료를 비공개로 보관했습니다. ${mechanical.error || ""}`;
+        : `기계적 처리에 실패해 자료를 비공개로 보관했습니다. ${mechanicalError || ""}`;
     return Response.json({
       contribution: { ...baseContribution, status: instantStatus },
       message,
     }, { status: instantStatus === "published" ? 201 : 202 });
   }
 
-  if (mechanical.status !== "completed") {
-    const status = mechanical.status === "awaiting_ocr" ? "awaiting_ocr" : "review_failed";
-    const message = mechanical.status === "awaiting_ocr"
+  if (mechanicalStatus !== "completed") {
+    const status = mechanicalStatus === "awaiting_ocr" ? "awaiting_ocr" : "review_failed";
+    const message = mechanicalStatus === "awaiting_ocr"
       ? "Azure OCR 연결을 기다리고 있습니다. 원본 파일은 AI에 전달되지 않았습니다."
-      : `OCR 텍스트 추출에 실패해 AI 검수를 시작하지 않았습니다. ${mechanical.error || ""}`;
+      : `OCR 텍스트 추출에 실패해 AI 검수를 시작하지 않았습니다. ${mechanicalError || ""}`;
     await runtime.DB.prepare("UPDATE contributions SET status = ?, error_message = ? WHERE id = ?")
       .bind(status, message.slice(0, 500), id).run();
     return Response.json({
@@ -193,7 +228,7 @@ export async function POST(request: Request) {
   try {
     const learningAsset = await structureContribution({
       apiKey: runtime.OPENAI_API_KEY,
-      extractedText: mechanical.text,
+      extractedText,
       title,
       sourceNote,
       customMaterialsText: customMaterialsForReview(customMaterials),

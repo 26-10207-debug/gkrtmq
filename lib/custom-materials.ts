@@ -1,6 +1,6 @@
 export type SourceSelection =
   | { kind: "text"; value: string }
-  | { kind: "image"; x: number; y: number; width: number; height: number; label: string };
+  | { kind: "image"; x: number; y: number; width: number; height: number; label: string; attachmentIndex?: number };
 
 export type ConceptShape = "cube" | "tetrahedron" | "square_pyramid";
 
@@ -37,7 +37,8 @@ function number(value: unknown) { return typeof value === "number" && Number.isF
 function normalizedCrop(value: Record<string, unknown>): SourceSelection | null {
   const x = number(value.x); const y = number(value.y); const width = number(value.width); const height = number(value.height);
   if (![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 1.001 || y + height > 1.001) return null;
-  return { kind: "image", x: Math.min(x, .999), y: Math.min(y, .999), width: Math.min(width, 1 - x), height: Math.min(height, 1 - y), label: text(value.label, 120) || "선택한 암기 영역" };
+  const attachmentIndex = Number.isInteger(value.attachmentIndex) && Number(value.attachmentIndex) >= 0 ? Number(value.attachmentIndex) : undefined;
+  return { kind: "image", x: Math.min(x, .999), y: Math.min(y, .999), width: Math.min(width, 1 - x), height: Math.min(height, 1 - y), label: text(value.label, 120) || "선택한 암기 영역", attachmentIndex };
 }
 
 export function hasImageSelection(materials: CustomMaterials) { return materials.memorization.selections.some((selection) => selection.kind === "image"); }

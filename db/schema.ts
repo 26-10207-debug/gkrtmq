@@ -87,6 +87,7 @@ export const contributions = sqliteTable("contributions", {
   textOnly: integer("text_only", { mode: "boolean" }).notNull().default(false),
   mechanicalError: text("mechanical_error"),
   customMaterialsJson: text("custom_materials_json").notNull().default("{}"),
+  attachmentsJson: text("attachments_json").notNull().default("[]"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

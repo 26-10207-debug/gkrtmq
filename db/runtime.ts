@@ -116,6 +116,7 @@ export function ensureSchema() {
           text_only INTEGER NOT NULL DEFAULT 0,
           mechanical_error TEXT,
           custom_materials_json TEXT NOT NULL DEFAULT '{}',
+          attachments_json TEXT NOT NULL DEFAULT '[]',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `),
@@ -173,6 +174,7 @@ export function ensureSchema() {
     if (!columns.has("text_only")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN text_only INTEGER NOT NULL DEFAULT 0"));
     if (!columns.has("mechanical_error")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_error TEXT"));
     if (!columns.has("custom_materials_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN custom_materials_json TEXT NOT NULL DEFAULT '{}'"));
+    if (!columns.has("attachments_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"));
     if (additions.length) await DB.batch(additions);
 
     const userColumnResult = await DB.prepare("PRAGMA table_info(users)").all();
