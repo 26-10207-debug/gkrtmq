@@ -60,10 +60,23 @@ export async function syncReferenceSearchIndex(DB: D1Database, id: string) {
     .bind(row.id, normalizeSubject(row.subject), row.title, tagsFromJson(row.tagsJson).join(" "), row.description).run();
 }
 
+export async function syncFolderSearchIndex(DB: D1Database, id: string) {
+  const row = await DB.prepare("SELECT id, title, description, subject, tags_json AS tagsJson FROM public_folders WHERE id = ?").bind(id).first<{ id: string; title: string; description: string; subject: string; tagsJson: string }>();
+  await DB.prepare("DELETE FROM search_documents WHERE source_id = ? AND source_type = 'folder'").bind(id).run();
+  if (!row) return;
+  const items = await DB.prepare(`SELECT c.title, c.tags_json AS tagsJson FROM public_folder_items fi JOIN contributions c ON c.id = fi.contribution_id
+    WHERE fi.folder_id = ? AND c.status IN ('published', 'published_ai')`).bind(id).all();
+  const itemText = (items.results as Array<{ title: string; tagsJson: string }>).flatMap((item) => [item.title, ...tagsFromJson(item.tagsJson)]).join(" ");
+  await DB.prepare("INSERT INTO search_documents (source_id, source_type, subject, title, tags, body) VALUES (?, 'folder', ?, ?, ?, ?)")
+    .bind(row.id, normalizeSubject(row.subject), row.title, tagsFromJson(row.tagsJson).join(" "), `${row.description} ${itemText}`.slice(0, 100000)).run();
+}
+
 export async function backfillSearchIndex(DB: D1Database) {
   const contributions = await DB.prepare("SELECT id FROM contributions WHERE status IN ('published', 'published_ai')").all();
   const references = await DB.prepare("SELECT id FROM reference_library").all();
+  const folders = await DB.prepare("SELECT id FROM public_folders").all();
   await DB.prepare("DELETE FROM search_documents").run();
   for (const row of contributions.results as Array<{ id: string }>) await syncContributionSearchIndex(DB, row.id);
   for (const row of references.results as Array<{ id: string }>) await syncReferenceSearchIndex(DB, row.id);
+  for (const row of folders.results as Array<{ id: string }>) await syncFolderSearchIndex(DB, row.id);
 }

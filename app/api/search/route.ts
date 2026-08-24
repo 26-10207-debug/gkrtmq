@@ -1,7 +1,7 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 
-type SearchDocument = { sourceId: string; sourceType: "contribution" | "reference"; subject: string; title: string; tags: string; snippet: string; rank: number };
+type SearchDocument = { sourceId: string; sourceType: "contribution" | "reference" | "folder"; subject: string; title: string; tags: string; snippet: string; rank: number };
 
 function safeMatchTerm(value: string) {
   return value.replace(/["'():*^~{}\[\]\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -38,6 +38,7 @@ export async function GET(request: Request) {
   if (subject && subject !== "전체") { clauses.push("subject = ?"); bindings.push(subject); }
   if (type === "사용자 자료") clauses.push("source_type = 'contribution'");
   if (type === "공개 참고") clauses.push("source_type = 'reference'");
+  if (type === "공개 폴더") clauses.push("source_type = 'folder'");
   const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags,
       snippet(search_documents, 5, '[[', ']]', '…', 18) AS snippet,
       bm25(search_documents, 0, 0, 5, 14, 9, 2) AS rank
@@ -46,8 +47,10 @@ export async function GET(request: Request) {
 
   const contributionIds = searchRows.filter((row) => row.sourceType === "contribution").map((row) => row.sourceId);
   const referenceIds = searchRows.filter((row) => row.sourceType === "reference").map((row) => row.sourceId);
+  const folderIds = searchRows.filter((row) => row.sourceType === "folder").map((row) => row.sourceId);
   const contributionMap = new Map<string, Record<string, unknown>>();
   const referenceMap = new Map<string, Record<string, unknown>>();
+  const folderMap = new Map<string, Record<string, unknown>>();
   if (contributionIds.length) {
     const placeholders = contributionIds.map(() => "?").join(",");
     const rows = await DB.prepare(`SELECT id, title, original_name AS originalName, content_type AS contentType, source_note AS sourceNote,
@@ -64,8 +67,15 @@ export async function GET(request: Request) {
       license_note AS licenseNote, access_mode AS accessMode, tags_json AS tagsJson FROM reference_library WHERE id IN (${placeholders})`).bind(...referenceIds).all();
     (rows.results as Array<Record<string, unknown>>).forEach((row) => referenceMap.set(String(row.id), row));
   }
+  if (folderIds.length) {
+    const placeholders = folderIds.map(() => "?").join(",");
+    const rows = await DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson, f.owner_display_name AS ownerDisplayName,
+      COUNT(fi.contribution_id) AS itemCount FROM public_folders f LEFT JOIN public_folder_items fi ON fi.folder_id = f.id
+      WHERE f.id IN (${placeholders}) GROUP BY f.id`).bind(...folderIds).all();
+    (rows.results as Array<Record<string, unknown>>).forEach((row) => folderMap.set(String(row.id), row));
+  }
   const results = searchRows.map((row) => {
-    const source = row.sourceType === "contribution" ? contributionMap.get(row.sourceId) : referenceMap.get(row.sourceId);
+    const source = row.sourceType === "contribution" ? contributionMap.get(row.sourceId) : row.sourceType === "reference" ? referenceMap.get(row.sourceId) : folderMap.get(row.sourceId);
     if (!source) return null;
     return { ...source, sourceType: row.sourceType, searchSnippet: row.snippet || "", searchRank: Number(row.rank || 0), tags: readTags(source.tagsJson) };
   }).filter(Boolean) as Array<Record<string, unknown> & { sourceType: string; searchRank: number }>;

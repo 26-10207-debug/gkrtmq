@@ -156,6 +156,21 @@ export function ensureSchema() {
           UNIQUE (learner_id, asset_id, mode)
         )
       `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS public_folders (
+          id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, owner_display_name TEXT NOT NULL,
+          title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '분류 없음',
+          tags_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS public_folder_items (
+          folder_id TEXT NOT NULL, contribution_id TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (folder_id, contribution_id)
+        )
+      `),
     ]);
 
     const columnResult = await DB.prepare("PRAGMA table_info(contributions)").all();
@@ -230,6 +245,8 @@ export function ensureSchema() {
         CREATE INDEX IF NOT EXISTS reference_library_source_idx
         ON reference_library (source_name)
       `),
+      DB.prepare("CREATE INDEX IF NOT EXISTS public_folders_owner_idx ON public_folders (owner_id, updated_at DESC)"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS public_folder_items_folder_idx ON public_folder_items (folder_id, position)"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_synonyms (canonical TEXT NOT NULL, alias TEXT NOT NULL, subject TEXT, PRIMARY KEY (canonical, alias))"),
       DB.prepare("CREATE INDEX IF NOT EXISTS search_synonyms_alias_idx ON search_synonyms (alias)"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_index_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),

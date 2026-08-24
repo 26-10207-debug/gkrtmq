@@ -6,7 +6,7 @@ import { ConceptModel, CustomMaterials, SourceSelection, conceptShapeDefinitions
 import { extractDocumentText, isImageFile } from "@/lib/document-text";
 import { ConceptMap } from "./ConceptMap";
 
-type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing";
+type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing" | "folder";
 type StudyMode = "info" | "examples" | "recall" | "plan";
 
 type Asset = {
@@ -92,6 +92,8 @@ type LearningProgress = {
   updatedAt: string;
 };
 
+type FolderRecord = { id: string; title: string; description: string; subject: string; tags: string[]; ownerDisplayName: string; itemCount?: number; items?: ContributionRecord[]; isMine?: number };
+
 function contributionToAsset(item: ContributionRecord): Asset {
   let customMaterials = emptyCustomMaterials();
   try {
@@ -158,6 +160,11 @@ function referenceToAsset(item: ReferenceRecord): Asset {
     isReference: true,
     subject: item.subject || item.topic.split(" · ")[0] || "분류 없음",
   };
+}
+
+function previewForAsset(asset: Asset) {
+  const image = asset.attachments?.find((attachment) => attachment.contentType.startsWith("image/"));
+  return image?.url;
 }
 
 const assets: Asset[] = [
@@ -279,6 +286,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [sort, setSort] = useState("relevance");
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState(assets[0]);
+  const [selectedFolder, setSelectedFolder] = useState<FolderRecord | null>(null);
   const [studyMode, setStudyMode] = useState<StudyMode>("info");
   const [studyIndex, setStudyIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
@@ -288,6 +296,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [communityAssets, setCommunityAssets] = useState<Asset[]>([]);
   const [referenceAssets, setReferenceAssets] = useState<Asset[]>([]);
   const [searchAssets, setSearchAssets] = useState<Asset[]>([]);
+  const [searchFolders, setSearchFolders] = useState<FolderRecord[]>([]);
   const [relatedTerms, setRelatedTerms] = useState<string[]>([]);
   const [searchSubjects, setSearchSubjects] = useState<string[]>(["물리학", "영어", "수학", "철학", "기타", "분류 없음"]);
   const [searching, setSearching] = useState(false);
@@ -334,19 +343,21 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     const params = new URLSearchParams({ q: query, subject, type: filter, sort });
     fetch(`/api/search?${params}`)
       .then((response) => response.ok ? response.json() : { results: [] })
-      .then((data: { results?: Array<ContributionRecord & ReferenceRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
+      .then((data: { results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
         if (!active) return;
-        const dynamic = (data.results || []).map((item) => item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item));
+        const folderResults = (data.results || []).filter((item) => item.sourceType === "folder") as unknown as FolderRecord[];
+        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item));
         const staticMatches = assets.filter((asset) => {
           const text = `${asset.title} ${asset.description} ${asset.subject} ${asset.tags.join(" ")}`.toLowerCase();
           return text.includes(query.toLowerCase()) && (subject === "전체" || asset.subject === subject) && (filter === "전체" || asset.type === filter);
         });
         const hydrated = dynamic.map((asset, index) => ({ ...asset, searchSnippet: (data.results || [])[index]?.searchSnippet }));
         setSearchAssets([...hydrated, ...staticMatches]);
+        setSearchFolders(folderResults);
         setRelatedTerms(data.related || []);
         if (data.subjects?.length) setSearchSubjects((current) => [...new Set([...current, ...data.subjects!])]);
       })
-      .catch(() => { if (active) setSearchAssets([]); })
+      .catch(() => { if (active) { setSearchAssets([]); setSearchFolders([]); } })
       .finally(() => { if (active) setSearching(false); });
     return () => { active = false; };
   }, [filter, hasSearched, query, sort, subject]);
@@ -364,6 +375,15 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     setSelectedAsset(asset);
     setView("detail");
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function openFolder(folder: FolderRecord) {
+    try {
+      const response = await fetch(`/api/folders?id=${encodeURIComponent(folder.id)}`);
+      const data = await response.json() as { folder?: FolderRecord };
+      setSelectedFolder(data.folder || folder);
+    } catch { setSelectedFolder(folder); }
+    setView("folder"); window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function showHome() {
@@ -468,12 +488,15 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onSort={setSort}
           onSearch={runSearch}
           onOpen={openAsset}
+          folders={searchFolders}
+          onOpenFolder={openFolder}
           onUpdated={updatePublishedContribution}
           onContribute={() => setView(user ? "contribute" : "account")}
           onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
         />
       )}
       {view === "detail" && <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} />}
+      {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={() => setView("search")} onOpen={openAsset} />}
       {view === "study" && (
         <StudyScreen
           mode={studyMode}
@@ -530,6 +553,7 @@ function SearchScreen(props: {
   sort: string;
   hasSearched: boolean;
   assets: Asset[];
+  folders: FolderRecord[];
   relatedTerms: string[];
   searching: boolean;
   user: AccountUser | null;
@@ -542,11 +566,12 @@ function SearchScreen(props: {
   onSort: (value: string) => void;
   onSearch: (value: string) => void;
   onOpen: (asset: Asset) => void;
+  onOpenFolder: (folder: FolderRecord) => void;
   onUpdated: (item: ContributionRecord) => void;
   onContribute: () => void;
   onResume: (asset: Asset, mode: StudyMode) => void;
 }) {
-  const filters = ["전체", "사용자 자료", "공개 참고"];
+  const filters = ["전체", "사용자 자료", "공개 참고", "공개 폴더"];
   const [draft, setDraft] = useState(props.query);
   useEffect(() => setDraft(props.query), [props.query]);
   function submitSearch(event: FormEvent) {
@@ -571,6 +596,9 @@ function SearchScreen(props: {
 
       <main className="explore-main" id="explore">
         {!props.hasSearched ? <DiscoveryGrid {...props} /> : <>
+        <div className="chatbot-results-intro">
+          <div className="chatbot-avatar" aria-hidden="true">✦</div><div><p className="eyebrow">Dumb Can Learn 탐색 도우미</p><h2>‘{props.query}’에 맞는 학습 결과예요.</h2><p>먼저 보기 좋은 자료 네 개를 골랐어요. 아래로 내려 더 많은 파일과 공개 폴더를 탐색할 수 있어요.</p></div>
+        </div>
         <div className="results-heading">
           <div>
             <p className="eyebrow">통합 검색 결과</p>
@@ -583,23 +611,20 @@ function SearchScreen(props: {
           <span>연관</span>
           {props.relatedTerms.map((item) => <button type="button" key={item} onClick={() => { setDraft(item); props.onSearch(item); }}>{item}</button>)}
         </div>
-        <div className="result-list">
+        <div className="result-card-gallery">
           {props.assets.map((asset, index) => (
-            <div className="search-result" key={asset.id}>
-            <button className={asset.id === "torque-examples" ? "result-card core-learning-card" : "result-card"} type="button" onClick={() => props.onOpen(asset)}>
-              <span className="file-number">{String(index + 1).padStart(2, "0")}</span>
+            <button className="visual-result-card" type="button" key={asset.id} onClick={() => props.onOpen(asset)}>
+              <span className={`result-preview ${previewForAsset(asset) ? "has-image" : ""}`}>{previewForAsset(asset) ? <img src={previewForAsset(asset)} alt="" /> : <b>{asset.subject || "학습"}</b>}</span>
               <span className="file-copy">
                 <span className="file-title">{asset.title}</span>
                 <span className="file-description">{asset.searchSnippet ? <MarkedSnippet text={asset.searchSnippet} /> : asset.description}</span>
                 <span className="tag-row"><span className="tag accent">{asset.subject || "분류 없음"}</span><span className="tag">{asset.type}</span>{asset.tags[0] && <span className="tag">{asset.tags[0]}</span>}{asset.sourceName && <span className="tag">출처 {asset.sourceName}</span>}</span>
               </span>
-              <span className="file-metrics"><strong>★ {asset.rating}</strong><span>평가 {asset.reviews}</span><span>조회 {formatViews(asset.views)}</span></span>
               <span className="card-arrow" aria-hidden="true">→</span>
             </button>
-            {asset.isMine && asset.isUpload && <SearchContributionEditor asset={asset} onSaved={props.onUpdated} />}
-            </div>
           ))}
-          {!props.assets.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
+          {props.folders.map((folder) => <button className="visual-result-card folder-result-card" type="button" key={folder.id} onClick={() => props.onOpenFolder(folder)}><span className="result-preview"><b>폴더</b></span><span className="file-copy"><span className="file-title">{folder.title}</span><span className="file-description">{folder.description || `${folder.itemCount || 0}개의 공개 학습 자료`}</span><span className="tag-row"><span className="tag accent">{folder.subject}</span><span className="tag">공개 폴더</span><span className="tag">{folder.itemCount || 0}개 자료</span></span></span><span className="card-arrow">→</span></button>)}
+          {!props.assets.length && !props.folders.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
         </div>
         </>}
       </main>
@@ -662,7 +687,28 @@ function AttachmentPreview({ attachments }: { attachments: NonNullable<Asset["at
   return <section className="attachment-preview"><div className="attachment-preview-heading"><div><p className="section-label">업로드 원문</p><h2>{images.length ? "이미지 원문" : "첨부 파일"}</h2></div><span>{attachments.length}개</span></div>{images.length > 0 && <div className="full-image-grid">{images.map((attachment) => <figure key={attachment.url}><img src={attachment.url} alt={attachment.originalName} loading="eager" /><figcaption>{attachment.originalName}</figcaption></figure>)}</div>}{documents.length > 0 && <div className="attachment-file-list">{documents.map((attachment) => <a href={attachment.url} target="_blank" rel="noreferrer" key={attachment.url}><span>파일</span><strong>{attachment.originalName}</strong><small>원문 열기 ↗</small></a>)}</div>}</section>;
 }
 
+function LearningDetailExperience({ asset, onBack, onStart }: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void }) {
+  const preview = previewForAsset(asset);
+  const tools: Array<{ title: string; description: string; mode: StudyMode }> = [
+    { title: "능동 회상", description: "직접 답을 떠올리고 자신감을 기록해요.", mode: "recall" },
+    { title: "기억하기", description: "핵심 정보와 원문을 짧게 정리해요.", mode: "info" },
+    { title: "암기 카드", description: "암기 자료와 짧은 카드를 확인해요.", mode: "info" },
+    { title: "예시 설명", description: "상황과 대조 예시로 개념을 연결해요.", mode: "examples" },
+  ];
+  return <main className="learning-detail-main"><button className="back-button" type="button" onClick={onBack}>← 검색 결과</button><section className="learning-detail-split"><div className={`large-asset-preview ${preview ? "has-image" : ""}`}>{preview ? <img src={preview} alt={`${asset.title} 원문 미리보기`} /> : <><span>{asset.isReference ? "참고" : "학습"}</span><b>{asset.subject || "분류 없음"}</b><small>{asset.originalName || asset.sourceName || "대표 미리보기 준비 중"}</small></>}</div><div className="learning-detail-panel"><header><p className="eyebrow">{asset.subject || "분류 없음"} · {asset.type}</p><h1>{asset.title}</h1><p>{asset.description}</p><div className="tag-row"><span className="tag accent">{asset.ownerName || asset.sourceName || "Dumb Can Learn"}</span>{asset.tags.slice(0, 3).map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></header><div className="learning-tool-arrows">{tools.map((tool, index) => <button type="button" key={tool.title} onClick={() => onStart(tool.mode)}><span>0{index + 1}</span><div><strong>{tool.title}</strong><small>{tool.description}</small></div><b>→</b></button>)}</div>{asset.isMine && asset.isUpload && <AddToFolder asset={asset} />}{asset.isReference && asset.sourceUrl && <a className="secondary-button" href={asset.sourceUrl} target="_blank" rel="noreferrer">출처 원문 열기 ↗</a>}</div></section>{asset.isUpload && asset.attachments && <AttachmentPreview attachments={asset.attachments} />}{asset.customMaterials && hasCustomMaterials(asset.customMaterials) && <CustomMaterialsPanelV2 materials={asset.customMaterials} attachments={asset.attachments || []} />}{asset.mechanicalStatus && asset.mechanicalStatus !== "none" && <MechanicalToolsPanel asset={asset} />}</main>;
+}
+
+function AddToFolder({ asset }: { asset: Asset }) {
+  const [folders, setFolders] = useState<FolderRecord[]>([]); const [folderId, setFolderId] = useState(""); const [message, setMessage] = useState("");
+  useEffect(() => { fetch("/api/folders?mine=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
+  async function add() { const folder = folders.find((item) => item.id === folderId); if (!folder) return; const ids = [...new Set([...(folder.items || []).map((item) => item.id), asset.id])]; const response = await fetch("/api/folders", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: folder.id, title: folder.title, description: folder.description, subject: folder.subject, tags: folder.tags, contributionIds: ids }) }); setMessage(response.ok ? "폴더에 추가했습니다." : "폴더에 추가하지 못했습니다."); }
+  if (!folders.length) return <small className="folder-add-note">내 공개 폴더를 계정 화면에서 먼저 만들어 보세요.</small>;
+  return <div className="detail-folder-add"><select aria-label="추가할 공개 폴더" value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">공개 폴더에 추가</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.title}</option>)}</select><button className="secondary-button" type="button" disabled={!folderId} onClick={() => void add()}>추가</button>{message && <small>{message}</small>}</div>;
+}
+
 function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void }) {
+  return <LearningDetailExperience asset={props.asset} onBack={props.onBack} onStart={props.onStart} />;
+  /* Legacy rich detail sections remain below for a safe future content expansion.
   if (props.asset.isReference) {
     const isExternal = props.asset.accessMode === "external_link";
     return (
@@ -760,6 +806,8 @@ function DetailScreen(props: { asset: Asset; onBack: () => void; onStart: (mode:
     </main>
   );
 }
+
+*/}
 
 function CustomMaterialsPanel({ materials }: { materials: CustomMaterials }) {
   const [revealedCards, setRevealedCards] = useState<Record<number, boolean>>({});
@@ -1104,7 +1152,7 @@ function ImageCropView({ selection, imageUrl }: { selection: Extract<SourceSelec
 type AccountData = {
   creditBalance: number;
   stats: { contributionCount: number; totalViews: number };
-  contributions: Array<{ id: string; title: string; originalName: string; sourceNote: string; status: string; publishMode: string; creditsAwarded: number; viewCount: number; errorMessage?: string | null; createdAt: string }>;
+  contributions: Array<{ id: string; title: string; originalName: string; contentType: string; sourceNote: string; status: string; publishMode: string; creditsAwarded: number; viewCount: number; errorMessage?: string | null; createdAt: string; subject?: string; tagsJson?: string; ownerDisplayName?: string; attachmentsJson?: string; customMaterialsJson?: string }>;
   ledger: Array<{ id: number; amount: number; reason: string; contributionId?: string | null; createdAt: string }>;
 };
 
@@ -1157,9 +1205,24 @@ function AccountScreen({ user, onBack, onPricing, onUpdated }: { user: AccountUs
         <div className="section-heading"><div><p className="eyebrow">내 기여</p><h2>검수·공개 현황</h2></div></div>
         {data?.contributions.length ? <div className="account-records">{data.contributions.map((item) => <ContributionEditor key={item.id} item={item} onSaved={replaceContribution} />)}</div> : <div className="empty-state"><strong>아직 기여 기록이 없습니다.</strong><span>자료 기여에서 공개 방식을 선택해 첫 파일을 올려보세요.</span></div>}
       </section>
+      <FolderManager contributions={data?.contributions || []} />
       <section className="credit-history"><div className="section-heading"><div><p className="eyebrow">크레딧</p><h2>지급 내역</h2></div></div>{data?.ledger.length ? <div>{data.ledger.map((entry) => <article key={entry.id}><div><strong>{entry.reason}</strong><span>{new Date(entry.createdAt).toLocaleDateString("ko-KR")}</span></div><b>+{entry.amount} C</b></article>)}</div> : <div className="empty-state compact-empty"><strong>아직 크레딧 내역이 없습니다.</strong><span>AI 검수를 통과한 자료가 공개되면 여기에 기록됩니다.</span></div>}</section>
     </main>
   );
+}
+
+function FolderManager({ contributions }: { contributions: AccountData["contributions"] }) {
+  const [folders, setFolders] = useState<FolderRecord[]>([]); const [title, setTitle] = useState(""); const [subject, setSubject] = useState(""); const [selected, setSelected] = useState<string[]>([]); const [message, setMessage] = useState<string | null>(null);
+  const publishable = contributions.filter((item) => ["published", "published_ai"].includes(item.status));
+  useEffect(() => { fetch("/api/folders?mine=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
+  async function create(event: FormEvent) { event.preventDefault(); setMessage(null); const response = await fetch("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, subject, contributionIds: selected }) }); const data = await response.json() as { folder?: FolderRecord; error?: string }; if (!response.ok || !data.folder) { setMessage(data.error || "폴더를 만들지 못했습니다."); return; } setFolders((current) => [data.folder!, ...current]); setTitle(""); setSubject(""); setSelected([]); setMessage("공개 폴더를 만들었습니다."); }
+  async function remove(id: string) { await fetch(`/api/folders?id=${encodeURIComponent(id)}`, { method: "DELETE" }); setFolders((current) => current.filter((folder) => folder.id !== id)); }
+  return <section className="folder-manager"><div className="section-heading"><div><p className="eyebrow">내 공개 폴더</p><h2>자료를 주제로 묶어 보여 주세요.</h2></div></div><form onSubmit={create}><label><span>폴더 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 물리 수행평가 준비" required /></label><label><span>과목</span><input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="선택" /></label>{publishable.length > 0 && <div className="folder-source-picker">{publishable.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />{item.title}</label>)}</div>}<button className="primary-button" type="submit">공개 폴더 만들기</button></form>{message && <p className="record-message">{message}</p>}<div className="folder-manager-list">{folders.map((folder) => <article key={folder.id}><div><span>공개 폴더</span><strong>{folder.title}</strong><small>{folder.subject} · {folder.items?.length || folder.itemCount || 0}개 자료</small></div><button className="secondary-button" type="button" onClick={() => void remove(folder.id)}>삭제</button></article>)}</div></section>;
+}
+
+function FolderScreen({ folder, onBack, onOpen }: { folder: FolderRecord; onBack: () => void; onOpen: (asset: Asset) => void }) {
+  const items = (folder.items || []).map((item) => contributionToAsset(item));
+  return <main className="folder-main"><button className="back-button" type="button" onClick={onBack}>← 검색 결과</button><section className="folder-hero"><p className="eyebrow">공개 폴더 · {folder.subject}</p><h1>{folder.title}</h1><p>{folder.description || `${folder.ownerDisplayName}님이 모은 공개 학습 자료입니다.`}</p><div className="tag-row">{folder.tags.map((tag) => <span key={tag} className="tag">{tag}</span>)}<span className="tag accent">{items.length}개 자료</span></div></section><section className="result-card-gallery">{items.map((asset) => <button key={asset.id} className="visual-result-card" type="button" onClick={() => onOpen(asset)}><span className={`result-preview ${previewForAsset(asset) ? "has-image" : ""}`}>{previewForAsset(asset) ? <img src={previewForAsset(asset)} alt="" /> : <b>{asset.subject}</b>}</span><span className="file-copy"><span className="file-title">{asset.title}</span><span className="file-description">{asset.description}</span></span><span className="card-arrow">→</span></button>)}</section></main>;
 }
 
 function ContributionEditor({ item, onSaved }: { item: AccountData["contributions"][number]; onSaved: (item: ContributionRecord) => void }) {

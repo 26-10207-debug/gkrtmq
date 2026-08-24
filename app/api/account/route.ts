@@ -23,8 +23,9 @@ export async function GET() {
       FROM contributions WHERE owner_id = ? AND status IN ('published', 'published_ai')
     `).bind(user.userId).first<{ contributionCount: number; totalViews: number }>(),
     DB.prepare(`
-      SELECT id, title, original_name AS originalName, source_note AS sourceNote, status, publish_mode AS publishMode, credits_awarded AS creditsAwarded,
-             view_count AS viewCount, error_message AS errorMessage, created_at AS createdAt
+      SELECT id, title, original_name AS originalName, content_type AS contentType, source_note AS sourceNote, status, publish_mode AS publishMode, credits_awarded AS creditsAwarded,
+             view_count AS viewCount, error_message AS errorMessage, created_at AS createdAt, subject, tags_json AS tagsJson,
+             owner_display_name AS ownerDisplayName, attachments_json AS attachmentsJson, custom_materials_json AS customMaterialsJson
       FROM contributions WHERE owner_id = ? ORDER BY created_at DESC LIMIT 50
     `).bind(user.userId).all(),
     DB.prepare(`
