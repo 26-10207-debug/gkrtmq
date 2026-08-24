@@ -186,6 +186,7 @@ export function ensureSchema() {
     const referenceColumnResult = await DB.prepare("PRAGMA table_info(reference_library)").all();
     const referenceColumns = new Set(referenceColumnResult.results.map((row) => String((row as { name?: unknown }).name ?? "")));
     if (!referenceColumns.has("subject")) await DB.prepare("ALTER TABLE reference_library ADD COLUMN subject TEXT NOT NULL DEFAULT '분류 없음'").run();
+    await DB.prepare("UPDATE reference_library SET subject = '물리학' WHERE subject = '분류 없음' AND topic LIKE '물리학%'").run();
 
     const userColumnResult = await DB.prepare("PRAGMA table_info(users)").all();
     const userColumns = new Set(

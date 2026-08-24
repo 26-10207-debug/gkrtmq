@@ -61,9 +61,9 @@ export async function syncReferenceSearchIndex(DB: D1Database, id: string) {
 }
 
 export async function backfillSearchIndex(DB: D1Database) {
-  const contributions = await DB.prepare("SELECT id FROM contributions WHERE status IN ('published', 'published_ai')").all<{ id: string }>();
-  const references = await DB.prepare("SELECT id FROM reference_library").all<{ id: string }>();
+  const contributions = await DB.prepare("SELECT id FROM contributions WHERE status IN ('published', 'published_ai')").all();
+  const references = await DB.prepare("SELECT id FROM reference_library").all();
   await DB.prepare("DELETE FROM search_documents").run();
-  for (const row of contributions.results) await syncContributionSearchIndex(DB, row.id);
-  for (const row of references.results) await syncReferenceSearchIndex(DB, row.id);
+  for (const row of contributions.results as Array<{ id: string }>) await syncContributionSearchIndex(DB, row.id);
+  for (const row of references.results as Array<{ id: string }>) await syncReferenceSearchIndex(DB, row.id);
 }
