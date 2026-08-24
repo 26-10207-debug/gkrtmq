@@ -57,6 +57,7 @@ export const referenceLibrary = sqliteTable("reference_library", {
   licenseNote: text("license_note").notNull(),
   accessMode: text("access_mode").notNull(),
   tagsJson: text("tags_json").notNull().default("[]"),
+  subject: text("subject").notNull().default("분류 없음"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
@@ -88,6 +89,8 @@ export const contributions = sqliteTable("contributions", {
   mechanicalError: text("mechanical_error"),
   customMaterialsJson: text("custom_materials_json").notNull().default("{}"),
   attachmentsJson: text("attachments_json").notNull().default("[]"),
+  subject: text("subject").notNull().default("분류 없음"),
+  tagsJson: text("tags_json").notNull().default("[]"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

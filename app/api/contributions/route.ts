@@ -4,6 +4,7 @@ import { structureContribution } from "@/lib/learning-ai";
 import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
 import { customMaterialsForReview, hasImageSelection, normalizeCustomMaterials } from "@/lib/custom-materials";
 import { publicAttachments, StoredAttachment } from "@/lib/contribution-attachments";
+import { normalizeSubject, normalizeTags, syncContributionSearchIndex } from "@/lib/search-index";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 5;
@@ -31,6 +32,7 @@ const contributionSelect = `
          text_only AS textOnly, mechanical_error AS mechanicalError,
          custom_materials_json AS customMaterialsJson,
          attachments_json AS attachmentsJson,
+         subject, tags_json AS tagsJson,
          created_at AS createdAt`;
 
 function contributionForClient(row: Record<string, unknown>) {
@@ -86,6 +88,8 @@ export async function POST(request: Request) {
   if (!files.length && legacyFile instanceof File) files.push(legacyFile);
   const title = String(form.get("title") ?? "").trim();
   const sourceNote = String(form.get("sourceNote") ?? "").trim();
+  const subject = normalizeSubject(form.get("subject"));
+  const tags = normalizeTags(form.get("tags"));
   const providedTexts = providedTextsFromForm(form);
   let customMaterials;
   try {
@@ -141,9 +145,9 @@ export async function POST(request: Request) {
     runtime.DB.prepare(`
       INSERT INTO contributions
         (id, title, original_name, content_type, object_key, source_note, status,
-         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status, custom_materials_json, attachments_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(id, title, attachments[0].originalName, attachments[0].contentType, attachments[0].objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials), JSON.stringify(attachments)),
+         owner_id, owner_email, owner_display_name, publish_mode, mechanical_options, mechanical_status, custom_materials_json, attachments_json, subject, tags_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(id, title, attachments[0].originalName, attachments[0].contentType, attachments[0].objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials), JSON.stringify(attachments), subject, JSON.stringify(tags)),
   ]);
 
   const mechanicalResults = await Promise.all(files.map(async (file, index) => processMechanically({
@@ -180,7 +184,7 @@ export async function POST(request: Request) {
   ).run();
 
   const baseContribution = {
-    id, title, originalName: attachments[0].originalName, contentType: attachments[0].contentType, sourceNote,
+    id, title, originalName: attachments[0].originalName, contentType: attachments[0].contentType, sourceNote, subject, tags,
     ownerDisplayName: user.displayName, viewCount: 0, publishMode,
     creditsAwarded: 0, createdAt: new Date().toISOString(), isMine: 1,
     mechanicalStatus, extractedTextPreview: extractedText.slice(0, 1200),
@@ -191,6 +195,7 @@ export async function POST(request: Request) {
   };
 
   if (publishMode === "instant") {
+    if (instantStatus === "published") await syncContributionSearchIndex(runtime.DB, id);
     const message = instantStatus === "published"
       ? textOnly
         ? "원본을 공개하지 않고 텍스트 기반 학습 자료로 저장했습니다."
@@ -262,6 +267,7 @@ export async function POST(request: Request) {
       `).bind(user.userId, REVIEW_REWARD, id),
       runtime.DB.prepare("UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(REVIEW_REWARD, user.userId),
     ]);
+    await syncContributionSearchIndex(runtime.DB, id);
 
     return Response.json({
       contribution: { ...baseContribution, status: "published_ai", creditsAwarded: REVIEW_REWARD },
@@ -281,18 +287,21 @@ export async function PATCH(request: Request) {
   await ensureSchema();
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
-  const body = await request.json() as { id?: unknown; title?: unknown; sourceNote?: unknown };
+  const body = await request.json() as { id?: unknown; title?: unknown; sourceNote?: unknown; subject?: unknown; tags?: unknown };
   const id = String(body.id ?? "").trim();
   const title = String(body.title ?? "").trim();
   const sourceNote = String(body.sourceNote ?? "").trim();
+  const subject = normalizeSubject(body.subject);
+  const tags = normalizeTags(body.tags);
   if (!id || !title) return Response.json({ error: "자료 ID와 제목이 필요합니다." }, { status: 400 });
   if (title.length > 160 || sourceNote.length > 2000) return Response.json({ error: "제목 또는 설명이 너무 깁니다." }, { status: 400 });
   const { DB } = getRuntimeEnv();
   const owned = await DB.prepare("SELECT id FROM contributions WHERE id = ? AND owner_id = ?")
     .bind(id, user.userId).first<{ id: string }>();
   if (!owned) return Response.json({ error: "수정할 권한이 없거나 자료를 찾지 못했습니다." }, { status: 404 });
-  await DB.prepare("UPDATE contributions SET title = ?, source_note = ? WHERE id = ? AND owner_id = ?")
-    .bind(title, sourceNote, id, user.userId).run();
+  await DB.prepare("UPDATE contributions SET title = ?, source_note = ?, subject = ?, tags_json = ? WHERE id = ? AND owner_id = ?")
+    .bind(title, sourceNote, subject, JSON.stringify(tags), id, user.userId).run();
+  await syncContributionSearchIndex(DB, id);
   const contribution = await DB.prepare(`${contributionSelect}, CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine FROM contributions WHERE id = ?`)
     .bind(user.userId, id).first();
   return Response.json({ contribution, message: "자료 정보가 저장되었습니다." });

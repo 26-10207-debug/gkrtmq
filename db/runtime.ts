@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { backfillSearchIndex } from "@/lib/search-index";
 
 export type RuntimeEnv = {
   DB: D1Database;
@@ -85,6 +86,7 @@ export function ensureSchema() {
           license_note TEXT NOT NULL,
           access_mode TEXT NOT NULL,
           tags_json TEXT NOT NULL DEFAULT '[]',
+          subject TEXT NOT NULL DEFAULT '분류 없음',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
@@ -117,6 +119,8 @@ export function ensureSchema() {
           mechanical_error TEXT,
           custom_materials_json TEXT NOT NULL DEFAULT '{}',
           attachments_json TEXT NOT NULL DEFAULT '[]',
+          subject TEXT NOT NULL DEFAULT '분류 없음',
+          tags_json TEXT NOT NULL DEFAULT '[]',
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `),
@@ -175,7 +179,13 @@ export function ensureSchema() {
     if (!columns.has("mechanical_error")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN mechanical_error TEXT"));
     if (!columns.has("custom_materials_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN custom_materials_json TEXT NOT NULL DEFAULT '{}'"));
     if (!columns.has("attachments_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'"));
+    if (!columns.has("subject")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN subject TEXT NOT NULL DEFAULT '분류 없음'"));
+    if (!columns.has("tags_json")) additions.push(DB.prepare("ALTER TABLE contributions ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'"));
     if (additions.length) await DB.batch(additions);
+
+    const referenceColumnResult = await DB.prepare("PRAGMA table_info(reference_library)").all();
+    const referenceColumns = new Set(referenceColumnResult.results.map((row) => String((row as { name?: unknown }).name ?? "")));
+    if (!referenceColumns.has("subject")) await DB.prepare("ALTER TABLE reference_library ADD COLUMN subject TEXT NOT NULL DEFAULT '분류 없음'").run();
 
     const userColumnResult = await DB.prepare("PRAGMA table_info(users)").all();
     const userColumns = new Set(
@@ -219,6 +229,10 @@ export function ensureSchema() {
         CREATE INDEX IF NOT EXISTS reference_library_source_idx
         ON reference_library (source_name)
       `),
+      DB.prepare("CREATE TABLE IF NOT EXISTS search_synonyms (canonical TEXT NOT NULL, alias TEXT NOT NULL, subject TEXT, PRIMARY KEY (canonical, alias))"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS search_synonyms_alias_idx ON search_synonyms (alias)"),
+      DB.prepare("CREATE TABLE IF NOT EXISTS search_index_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),
+      DB.prepare("CREATE VIRTUAL TABLE IF NOT EXISTS search_documents USING fts5(source_id UNINDEXED, source_type UNINDEXED, subject, title, tags, body, tokenize='trigram')"),
     ]);
 
     const referenceSeeds = [
@@ -227,6 +241,7 @@ export function ensureSchema() {
         title: "NIST CODATA 핵심 상수 — 빛의 속력과 플랑크 상수",
         description: "빛의 속력 c = 299,792,458 m/s와 플랑크 상수 h = 6.62607015×10⁻³⁴ J·s처럼 SI에서 정확히 정의된 상수를 확인하고, 단위·유효숫자 문제에 활용합니다.",
         topic: "물리학 · 측정과 상수",
+        subject: "물리학",
         sourceName: "NIST CODATA",
         sourceUrl: "https://physics.nist.gov/cgi-bin/cuu/CCValue?uhz%7CShowFirst=Browse",
         licenseNote: "NIST 원문·데이터의 최신 값과 이용 조건은 출처에서 다시 확인하세요. 이 DB에는 학습용 요약과 출처 링크만 보관합니다.",
@@ -238,6 +253,7 @@ export function ensureSchema() {
         title: "Wikidata로 잇는 물리 개념 연결 지도",
         description: "힘·돌림힘·에너지·파동처럼 서로 연결된 개념을 Wikidata의 공개 식별자와 관계로 탐색하는 참고 자료입니다. 검색어를 넓히고 관련 개념을 찾는 데 활용하세요.",
         topic: "물리학 · 개념 탐색",
+        subject: "물리학",
         sourceName: "Wikidata",
         sourceUrl: "https://www.wikidata.org/wiki/Wikidata:Text_of_the_Creative_Commons_Public_Domain_Dedication",
         licenseNote: "Wikidata 구조화 데이터는 CC0 공개헌신으로 제공됩니다. 개별 출처의 이미지·설명문은 별도 권리가 있을 수 있으므로 원문 페이지에서 확인하세요.",
@@ -249,6 +265,7 @@ export function ensureSchema() {
         title: "NASA 과학 데이터·시각 자료 출처 안내",
         description: "우주·지구·태양계 학습에 쓸 공개 NASA 데이터와 시각 자료의 출처를 찾는 안내입니다. 자료의 과학적 맥락과 크레딧 표기를 함께 확인합니다.",
         topic: "물리학 · 우주와 관측",
+        subject: "물리학",
         sourceName: "NASA",
         sourceUrl: "https://www.nasa.gov/nasa-brand-center/images-and-media/",
         licenseNote: "NASA 로고·휘장 사용은 금지되며, 제3자 저작권 표기가 있는 자료는 별도 허가가 필요할 수 있습니다. NASA의 후원·보증처럼 보이게 사용하지 마세요.",
@@ -260,6 +277,7 @@ export function ensureSchema() {
         title: "OpenStax 대학물리학 1권 — 외부 학습 링크",
         description: "역학·파동·열을 단계적으로 다루는 공개 교재의 원문으로 이동합니다. 이 앱에는 교재 본문을 저장하지 않고 외부 출처만 연결합니다.",
         topic: "물리학 · 교과 학습",
+        subject: "물리학",
         sourceName: "OpenStax",
         sourceUrl: "https://openstax.org/books/university-physics-volume-1/pages/1-introduction",
         licenseNote: "원문을 복제하거나 유료 서비스에 포함하기 전에는 해당 판본·페이지의 라이선스를 직접 확인해야 합니다.",
@@ -271,28 +289,54 @@ export function ensureSchema() {
         title: "PhET 물리 시뮬레이션 — 외부 학습 링크",
         description: "직접 조작으로 힘·에너지·파동을 탐구할 수 있는 PhET 시뮬레이션 목록으로 이동합니다. 수업 또는 개인 학습에서 예시를 확인할 때 사용하세요.",
         topic: "물리학 · 시뮬레이션",
+        subject: "물리학",
         sourceName: "PhET Interactive Simulations",
         sourceUrl: "https://phet.colorado.edu/en/simulations",
         licenseNote: "이 앱은 PhET 시뮬레이션을 복제·재배포하지 않고 링크만 제공합니다. 유료·상업적 사용 전에는 현재 라이선스와 사용 조건을 확인해야 합니다.",
         accessMode: "external_link",
         tags: ["외부 학습 자료", "시뮬레이션", "라이선스 확인"],
       },
+      {
+        id: "british-council-present-perfect",
+        title: "현재완료를 상황으로 이해하기 — 외부 학습 링크",
+        description: "현재완료(present perfect)를 과거의 경험·변화·현재와 이어진 결과로 나누어 보며, 단순과거와 비교해 쓰임을 익히는 영어 참고 자료입니다.",
+        topic: "영어 · 문법과 표현",
+        subject: "영어",
+        sourceName: "British Council LearnEnglish",
+        sourceUrl: "https://learnenglish.britishcouncil.org/free-resources/grammar/english-grammar-reference/present-perfect",
+        licenseNote: "이 앱은 원문을 복제하지 않고 공식 학습 페이지로 연결합니다. 최신 내용과 이용 조건은 출처에서 확인하세요.",
+        accessMode: "external_link",
+        tags: ["영어", "현재완료", "present perfect", "문법", "예시"],
+      },
     ];
     await DB.batch(referenceSeeds.map((reference) => DB.prepare(`
       INSERT OR IGNORE INTO reference_library
-        (id, title, description, topic, source_name, source_url, license_note, access_mode, tags_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, title, description, topic, subject, source_name, source_url, license_note, access_mode, tags_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       reference.id,
       reference.title,
       reference.description,
       reference.topic,
+      reference.subject,
       reference.sourceName,
       reference.sourceUrl,
       reference.licenseNote,
       reference.accessMode,
       JSON.stringify(reference.tags),
     )));
+    await DB.batch([
+      DB.prepare("INSERT OR IGNORE INTO search_synonyms (canonical, alias, subject) VALUES ('돌림힘', '돌림힘', '물리학')"),
+      DB.prepare("INSERT OR IGNORE INTO search_synonyms (canonical, alias, subject) VALUES ('돌림힘', '토크', '물리학')"),
+      DB.prepare("INSERT OR IGNORE INTO search_synonyms (canonical, alias, subject) VALUES ('돌림힘', '모멘트', '물리학')"),
+      DB.prepare("INSERT OR IGNORE INTO search_synonyms (canonical, alias, subject) VALUES ('현재완료', '현재완료', '영어')"),
+      DB.prepare("INSERT OR IGNORE INTO search_synonyms (canonical, alias, subject) VALUES ('현재완료', 'present perfect', '영어')"),
+    ]);
+    const indexed = await DB.prepare("SELECT value FROM search_index_state WHERE key = 'fts_backfill_v1'").first();
+    if (!indexed) {
+      await backfillSearchIndex(DB);
+      await DB.prepare("INSERT OR REPLACE INTO search_index_state (key, value) VALUES ('fts_backfill_v1', CURRENT_TIMESTAMP)").run();
+    }
     await DB.prepare("PRAGMA optimize").run();
   })();
 
