@@ -12,6 +12,12 @@ export const conceptShapeDefinitions: Record<ConceptShape, { label: string; vert
 
 export type ConceptModel = { shape: ConceptShape; topic: string; vertices: string[]; edges: string[] };
 
+export type ConceptCanvasElement =
+  | { id: string; kind: "ellipse" | "rectangle" | "polygon" | "text"; x: number; y: number; width: number; height: number; label: string }
+  | { id: string; kind: "arrow"; from: string; to: string; label: string };
+
+export type ConceptCanvas = { title: string; elements: ConceptCanvasElement[] };
+
 export type CustomMaterials = {
   memorization: { title: string; items: string[]; selections: SourceSelection[] };
   recall: {
@@ -21,12 +27,13 @@ export type CustomMaterials = {
     sequences: Array<{ prompt: string; items: string[] }>;
     diagrams: Array<{ title: string; nodes: string[]; blankIndex: number; explanation: string }>;
     conceptModels: ConceptModel[];
+    conceptCanvases: ConceptCanvas[];
   };
   examples: Array<{ situation: string; misconception: string; contrast: string; explanation: string; takeaway: string }>;
 };
 
 export function emptyCustomMaterials(): CustomMaterials {
-  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [] }, examples: [] };
+  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [], conceptCanvases: [] }, examples: [] };
 }
 
 function text(value: unknown, limit: number) { return typeof value === "string" ? value.trim().slice(0, limit) : ""; }
@@ -87,6 +94,28 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
     const definition = conceptShapeDefinitions[shape]; const topic = text(model.topic, 140); const vertices = lines(model.vertices, definition.vertices, 120); const edges = lines(model.edges, definition.edges.length, 160);
     if (!topic || vertices.length !== definition.vertices || edges.length !== definition.edges.length) throw new Error(`${definition.label} 개념도에는 주제, 꼭짓점 ${definition.vertices}개, 연결 설명 ${definition.edges.length}개를 모두 입력해 주세요.`); return [{ shape, topic, vertices, edges }];
   });
+  result.recall.conceptCanvases = (Array.isArray(recall.conceptCanvases) ? recall.conceptCanvases : []).slice(0, 6).flatMap((item) => {
+    const canvas = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    if (!hasText(canvas)) return [];
+    const title = text(canvas.title, 140) || "개념 도형";
+    const rawElements = Array.isArray(canvas.elements) ? canvas.elements.slice(0, 48) : [];
+    const elements = rawElements.flatMap<ConceptCanvasElement>((raw, index) => {
+      const element = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+      const id = text(element.id, 64) || `element-${index + 1}`;
+      if (element.kind === "arrow") {
+        const from = text(element.from, 64); const to = text(element.to, 64); const label = text(element.label, 180);
+        return from && to ? [{ id, kind: "arrow" as const, from, to, label }] : [];
+      }
+      const kind = element.kind === "ellipse" || element.kind === "rectangle" || element.kind === "polygon" || element.kind === "text" ? element.kind : null;
+      const x = number(element.x); const y = number(element.y); const width = number(element.width); const height = number(element.height); const label = text(element.label, 240);
+      if (!kind || ![x, y, width, height].every(Number.isFinite) || !label || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 100.01 || y + height > 100.01) return [];
+      return [{ id, kind: kind as "ellipse" | "rectangle" | "polygon" | "text", x, y, width, height, label }];
+    });
+    const nodeIds = new Set(elements.filter((element) => element.kind !== "arrow").map((element) => element.id));
+    const validElements = elements.filter((element) => element.kind !== "arrow" || (nodeIds.has(element.from) && nodeIds.has(element.to)));
+    if (!validElements.some((element) => element.kind !== "arrow")) throw new Error("개념 도형에는 하나 이상의 개념 요소를 추가해 주세요.");
+    return [{ title, elements: validElements }];
+  });
   result.examples = (Array.isArray(value.examples) ? value.examples : []).slice(0, 12).flatMap((item) => {
     const example = item && typeof item === "object" ? item as Record<string, unknown> : {}; const situation = text(example.situation, 700); const misconception = text(example.misconception, 700); const contrast = text(example.contrast, 900); const explanation = text(example.explanation, 1000); const takeaway = text(example.takeaway, 300);
     if (!situation && !misconception && !contrast && !explanation && !takeaway) return []; if (!situation || !explanation || !takeaway) throw new Error("예시는 상황, 설명, 기억할 핵심을 모두 입력해 주세요."); return [{ situation, misconception, contrast, explanation, takeaway }];
@@ -94,5 +123,5 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
   return result;
 }
 
-export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.examples.length); }
+export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.recall.conceptCanvases.length || materials.examples.length); }
 export function customMaterialsForReview(materials: CustomMaterials) { return hasCustomMaterials(materials) ? JSON.stringify(materials) : "없음"; }
