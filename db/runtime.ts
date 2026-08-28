@@ -171,6 +171,16 @@ export function ensureSchema() {
           PRIMARY KEY (folder_id, contribution_id)
         )
       `),
+      DB.prepare(`
+        CREATE TABLE IF NOT EXISTS contribution_drafts (
+          id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, source_contribution_id TEXT,
+          title TEXT NOT NULL DEFAULT '', source_note TEXT NOT NULL DEFAULT '', subject TEXT NOT NULL DEFAULT '분류 없음',
+          tags_json TEXT NOT NULL DEFAULT '[]', custom_materials_json TEXT NOT NULL DEFAULT '{}', mechanical_options TEXT NOT NULL DEFAULT '{}',
+          attachments_json TEXT NOT NULL DEFAULT '[]', extracted_texts_json TEXT NOT NULL DEFAULT '[]', folder_id TEXT, regular_folder_ids_json TEXT NOT NULL DEFAULT '[]',
+          page_start INTEGER, page_end INTEGER, publish_mode TEXT NOT NULL DEFAULT 'instant',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+      `),
     ]);
 
     const columnResult = await DB.prepare("PRAGMA table_info(contributions)").all();
@@ -211,6 +221,17 @@ export function ensureSchema() {
       await DB.prepare("ALTER TABLE users ADD COLUMN credit_balance INTEGER NOT NULL DEFAULT 0").run();
     }
 
+    const folderColumnResult = await DB.prepare("PRAGMA table_info(public_folders)").all();
+    const folderColumns = new Set(folderColumnResult.results.map((row) => String((row as { name?: unknown }).name ?? "")));
+    if (!folderColumns.has("folder_type")) await DB.prepare("ALTER TABLE public_folders ADD COLUMN folder_type TEXT NOT NULL DEFAULT 'regular'").run();
+    if (!folderColumns.has("visibility_state")) await DB.prepare("ALTER TABLE public_folders ADD COLUMN visibility_state TEXT NOT NULL DEFAULT 'published'").run();
+    const folderItemColumnResult = await DB.prepare("PRAGMA table_info(public_folder_items)").all();
+    const folderItemColumns = new Set(folderItemColumnResult.results.map((row) => String((row as { name?: unknown }).name ?? "")));
+    if (!folderItemColumns.has("page_start")) await DB.prepare("ALTER TABLE public_folder_items ADD COLUMN page_start INTEGER").run();
+    if (!folderItemColumns.has("page_end")) await DB.prepare("ALTER TABLE public_folder_items ADD COLUMN page_end INTEGER").run();
+    const draftColumns = new Set(((await DB.prepare("PRAGMA table_info(contribution_drafts)").all()).results as Array<{ name: string }>).map((column) => column.name));
+    if (!draftColumns.has("regular_folder_ids_json")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN regular_folder_ids_json TEXT NOT NULL DEFAULT '[]'").run();
+
     await DB.batch([
       DB.prepare("CREATE INDEX IF NOT EXISTS auth_session_user_idx ON auth_session (user_id)"),
       DB.prepare("CREATE INDEX IF NOT EXISTS auth_account_user_idx ON auth_account (user_id)"),
@@ -247,6 +268,8 @@ export function ensureSchema() {
       `),
       DB.prepare("CREATE INDEX IF NOT EXISTS public_folders_owner_idx ON public_folders (owner_id, updated_at DESC)"),
       DB.prepare("CREATE INDEX IF NOT EXISTS public_folder_items_folder_idx ON public_folder_items (folder_id, position)"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS contribution_drafts_owner_updated_idx ON contribution_drafts (owner_id, updated_at DESC)"),
+      DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS contribution_drafts_source_unique_idx ON contribution_drafts (source_contribution_id) WHERE source_contribution_id IS NOT NULL"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_synonyms (canonical TEXT NOT NULL, alias TEXT NOT NULL, subject TEXT, PRIMARY KEY (canonical, alias))"),
       DB.prepare("CREATE INDEX IF NOT EXISTS search_synonyms_alias_idx ON search_synonyms (alias)"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_index_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),

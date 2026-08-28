@@ -4,7 +4,7 @@ import { structureContribution } from "@/lib/learning-ai";
 import { MechanicalOptions, processMechanically } from "@/lib/mechanical-tools";
 import { customMaterialsForReview, hasImageSelection, normalizeCustomMaterials } from "@/lib/custom-materials";
 import { publicAttachments, StoredAttachment } from "@/lib/contribution-attachments";
-import { normalizeSubject, normalizeTags, syncContributionSearchIndex } from "@/lib/search-index";
+import { normalizeSubject, normalizeTags, syncContributionSearchIndex, syncFolderSearchIndex } from "@/lib/search-index";
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 const MAX_UPLOAD_COUNT = 5;
@@ -81,32 +81,50 @@ export async function POST(request: Request) {
   await ensureSchema();
   const user = await getChatGPTUser();
   if (!user) return Response.json({ error: "자료를 올리려면 로그인이 필요합니다." }, { status: 401 });
+  const userId = user.userId;
 
   const form = await request.formData();
-  const files = form.getAll("files").filter((value): value is File => value instanceof File);
+  let files = form.getAll("files").filter((value): value is File => value instanceof File);
   const legacyFile = form.get("file");
   if (!files.length && legacyFile instanceof File) files.push(legacyFile);
-  const title = String(form.get("title") ?? "").trim();
-  const sourceNote = String(form.get("sourceNote") ?? "").trim();
-  const subject = normalizeSubject(form.get("subject"));
-  const tags = normalizeTags(form.get("tags"));
-  const providedTexts = providedTextsFromForm(form);
+  const runtime = getRuntimeEnv(); const draftId = String(form.get("draftId") || "").trim();
+  const draft = draftId ? await runtime.DB.prepare(`SELECT source_contribution_id AS sourceContributionId, title, source_note AS sourceNote, subject, tags_json AS tagsJson,
+    custom_materials_json AS customMaterialsJson, mechanical_options AS mechanicalOptions, attachments_json AS attachmentsJson,
+    extracted_texts_json AS extractedTextsJson, folder_id AS folderId, regular_folder_ids_json AS regularFolderIdsJson, page_start AS pageStart, page_end AS pageEnd
+    FROM contribution_drafts WHERE id = ? AND owner_id = ?`).bind(draftId, user.userId).first<Record<string, unknown>>() : null;
+  if (draftId && !draft) return Response.json({ error: "공개할 초안을 찾지 못했습니다." }, { status: 404 });
+  if (!files.length && draft) {
+    const draftAttachments = (() => { try { return JSON.parse(String(draft.attachmentsJson || "[]")) as StoredAttachment[]; } catch { return []; } })();
+    files = (await Promise.all(draftAttachments.map(async (attachment) => { const object = await runtime.UPLOADS.get(attachment.objectKey); if (!object) return null; return new File([await new Response(object.body).arrayBuffer()], attachment.originalName, { type: attachment.contentType }); }))).filter((file): file is File => Boolean(file));
+  }
+  const title = String(form.get("title") ?? draft?.title ?? "").trim();
+  const sourceNote = String(form.get("sourceNote") ?? draft?.sourceNote ?? "").trim();
+  const subject = normalizeSubject(form.get("subject") ?? draft?.subject);
+  const tags = normalizeTags(form.get("tags") ?? (draft ? JSON.parse(String(draft.tagsJson || "[]")) : []));
+  const providedTexts = form.has("extractedTexts") ? providedTextsFromForm(form) : (() => { try { return JSON.parse(String(draft?.extractedTextsJson || "[]")) as string[]; } catch { return []; } })();
   let customMaterials;
   try {
-    customMaterials = normalizeCustomMaterials(String(form.get("customMaterials") ?? "{}"));
+    customMaterials = normalizeCustomMaterials(String(form.get("customMaterials") ?? draft?.customMaterialsJson ?? "{}"));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "자료 구체화 내용을 확인해 주세요." }, { status: 400 });
   }
   const licenseConfirmed = form.get("licenseConfirmed") === "true";
   const publishMode = form.get("publishMode") === "ai_review" ? "ai_review" : "instant";
-  const mechanicalOptions: MechanicalOptions = {
-    ocr: form.get("ocr") === "true",
-    textOnly: form.get("textOnly") === "true",
-    splitQuestions: form.get("splitQuestions") === "true",
-    createRecall: form.get("createRecall") === "true",
-  };
+  const draftMechanical = (() => { try { return JSON.parse(String(draft?.mechanicalOptions || "{}")) as Partial<MechanicalOptions>; } catch { return {}; } })();
+  const mechanicalOptions: MechanicalOptions = { ocr: form.has("ocr") ? form.get("ocr") === "true" : Boolean(draftMechanical.ocr), textOnly: form.has("textOnly") ? form.get("textOnly") === "true" : Boolean(draftMechanical.textOnly), splitQuestions: form.has("splitQuestions") ? form.get("splitQuestions") === "true" : Boolean(draftMechanical.splitQuestions), createRecall: form.has("createRecall") ? form.get("createRecall") === "true" : Boolean(draftMechanical.createRecall) };
 
   if (!files.length || !title) return Response.json({ error: "제목과 1개 이상의 파일이 필요합니다." }, { status: 400 });
+  if (!subject || subject === "분류 없음") return Response.json({ error: "과목·분류를 선택하거나 직접 입력해 주세요." }, { status: 400 });
+  if (draft?.folderId) {
+    const selectedFolder = await runtime.DB.prepare("SELECT folder_type AS folderType FROM public_folders WHERE id = ? AND owner_id = ?").bind(String(draft.folderId), user.userId).first<{ folderType: string }>();
+    if (!selectedFolder) return Response.json({ error: "선택한 폴더를 찾을 수 없습니다." }, { status: 400 });
+    if (selectedFolder.folderType === "book" && (!draft.pageStart || Number(draft.pageStart) < 1 || (draft.pageEnd && Number(draft.pageEnd) < Number(draft.pageStart)))) return Response.json({ error: "책 폴더의 올바른 시작·끝 페이지를 입력해 주세요." }, { status: 400 });
+  }
+  const regularFolderIds = (() => { try { return JSON.parse(String(draft?.regularFolderIdsJson || "[]")) as string[]; } catch { return []; } })().filter((id): id is string => typeof id === "string").slice(0, 20);
+  if (regularFolderIds.length) {
+    const placeholders = regularFolderIds.map(() => "?").join(","); const ownedRegular = await runtime.DB.prepare(`SELECT id FROM public_folders WHERE owner_id = ? AND folder_type = 'regular' AND id IN (${placeholders})`).bind(userId, ...regularFolderIds).all();
+    if (ownedRegular.results.length !== new Set(regularFolderIds).size) return Response.json({ error: "선택한 일반 폴더를 확인해 주세요." }, { status: 400 });
+  }
   if (files.length > MAX_UPLOAD_COUNT) return Response.json({ error: `한 자료에는 최대 ${MAX_UPLOAD_COUNT}개 파일까지 올릴 수 있습니다.` }, { status: 413 });
   if (!licenseConfirmed) return Response.json({ error: "기여 권한과 선택한 공개 방식에 동의해야 합니다." }, { status: 400 });
   if (mechanicalOptions.textOnly && hasImageSelection(customMaterials)) return Response.json({ error: "이미지에서 선택한 암기 영역을 공개하려면 원본 공개를 유지해야 합니다." }, { status: 400 });
@@ -114,7 +132,6 @@ export async function POST(request: Request) {
   if (files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_UPLOAD_BYTES) return Response.json({ error: "한 자료의 전체 파일 용량은 32MB까지입니다." }, { status: 413 });
   if (files.some((file) => !ALLOWED_TYPES.has(file.type))) return Response.json({ error: "지원하지 않는 파일 형식이 포함되어 있습니다." }, { status: 415 });
 
-  const runtime = getRuntimeEnv();
   const id = crypto.randomUUID();
   const attachments: StoredAttachment[] = await Promise.all(files.map(async (file, index) => {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
@@ -194,8 +211,24 @@ export async function POST(request: Request) {
     customMaterialsJson: JSON.stringify(customMaterials),
   };
 
+  async function finalizePublished() {
+    if (draft?.folderId) {
+      const folder = await runtime.DB.prepare("SELECT id, folder_type AS folderType FROM public_folders WHERE id = ? AND owner_id = ?").bind(String(draft.folderId), userId).first<{ id: string; folderType: string }>();
+      if (folder) {
+        await runtime.DB.prepare("INSERT OR REPLACE INTO public_folder_items (folder_id, contribution_id, position, page_start, page_end) VALUES (?, ?, COALESCE((SELECT MAX(position)+1 FROM public_folder_items WHERE folder_id = ?),0), ?, ?)").bind(folder.id, id, folder.id, draft.pageStart ?? null, draft.pageEnd ?? null).run();
+        await runtime.DB.prepare("UPDATE public_folders SET visibility_state = 'published', updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(folder.id).run(); await syncFolderSearchIndex(runtime.DB, folder.id);
+      }
+    }
+    for (const regularFolderId of [...new Set(regularFolderIds)]) {
+      await runtime.DB.prepare("INSERT OR REPLACE INTO public_folder_items (folder_id, contribution_id, position) VALUES (?, ?, COALESCE((SELECT MAX(position)+1 FROM public_folder_items WHERE folder_id = ?),0))").bind(regularFolderId, id, regularFolderId).run();
+      await runtime.DB.prepare("UPDATE public_folders SET visibility_state = 'published', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?").bind(regularFolderId, userId).run(); await syncFolderSearchIndex(runtime.DB, regularFolderId);
+    }
+    if (draft?.sourceContributionId) { await runtime.DB.prepare("UPDATE contributions SET status = 'replaced' WHERE id = ? AND owner_id = ?").bind(String(draft.sourceContributionId), userId).run(); await syncContributionSearchIndex(runtime.DB, String(draft.sourceContributionId)); }
+    if (draftId) await runtime.DB.prepare("DELETE FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(draftId, userId).run();
+  }
+
   if (publishMode === "instant") {
-    if (instantStatus === "published") await syncContributionSearchIndex(runtime.DB, id);
+    if (instantStatus === "published") { await syncContributionSearchIndex(runtime.DB, id); await finalizePublished(); }
     const message = instantStatus === "published"
       ? textOnly
         ? "원본을 공개하지 않고 텍스트 기반 학습 자료로 저장했습니다."
@@ -268,6 +301,7 @@ export async function POST(request: Request) {
       runtime.DB.prepare("UPDATE users SET credit_balance = credit_balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(REVIEW_REWARD, user.userId),
     ]);
     await syncContributionSearchIndex(runtime.DB, id);
+    await finalizePublished();
 
     return Response.json({
       contribution: { ...baseContribution, status: "published_ai", creditsAwarded: REVIEW_REWARD },

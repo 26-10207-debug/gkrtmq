@@ -18,6 +18,15 @@ export type ConceptCanvasElement =
 
 export type ConceptCanvas = { title: string; elements: ConceptCanvasElement[] };
 
+export type ConceptGraph3DNode = { id: string; shape: "sphere" | "box" | "text"; x: number; y: number; z: number; label: string };
+export type ConceptGraph3DEdge = { id: string; from: string; to: string; label: string; directed: boolean };
+export type ConceptGraph3D = {
+  title: string;
+  nodes: ConceptGraph3DNode[];
+  edges: ConceptGraph3DEdge[];
+  camera: { x: number; y: number; z: number; zoom: number };
+};
+
 export type CustomMaterials = {
   memorization: { title: string; items: string[]; selections: SourceSelection[] };
   recall: {
@@ -28,18 +37,20 @@ export type CustomMaterials = {
     diagrams: Array<{ title: string; nodes: string[]; blankIndex: number; explanation: string }>;
     conceptModels: ConceptModel[];
     conceptCanvases: ConceptCanvas[];
+    conceptGraphs3D: ConceptGraph3D[];
   };
   examples: Array<{ situation: string; misconception: string; contrast: string; explanation: string; takeaway: string }>;
 };
 
 export function emptyCustomMaterials(): CustomMaterials {
-  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [], conceptCanvases: [] }, examples: [] };
+  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [], conceptCanvases: [], conceptGraphs3D: [] }, examples: [] };
 }
 
 function text(value: unknown, limit: number) { return typeof value === "string" ? value.trim().slice(0, limit) : ""; }
 function lines(value: unknown, limit: number, itemLimit: number) { return Array.isArray(value) ? value.map((item) => text(item, itemLimit)).filter(Boolean).slice(0, limit) : []; }
 function hasText(value: unknown): boolean { return typeof value === "string" ? value.trim().length > 0 : Array.isArray(value) ? value.some(hasText) : Boolean(value && typeof value === "object" && Object.values(value).some(hasText)); }
 function number(value: unknown) { return typeof value === "number" && Number.isFinite(value) ? value : NaN; }
+function bounded(value: unknown, fallback = 0, min = -10, max = 10) { const parsed = number(value); return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback; }
 
 function normalizedCrop(value: Record<string, unknown>): SourceSelection | null {
   const x = number(value.x); const y = number(value.y); const width = number(value.width); const height = number(value.height);
@@ -57,7 +68,7 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
   const value = parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
   const result = emptyCustomMaterials();
   const memory = value.memorization && typeof value.memorization === "object" ? value.memorization as Record<string, unknown> : {};
-  result.memorization.items = lines(memory.items, 12, 500);
+  result.memorization.items = (Array.isArray(memory.items) ? memory.items : []).slice(0, 12).map((item) => text(item, 500));
   result.memorization.selections = (Array.isArray(memory.selections) ? memory.selections : []).slice(0, 16).flatMap((item) => {
     const selection = item && typeof item === "object" ? item as Record<string, unknown> : {};
     if (selection.kind === "text") { const selectedText = text(selection.value, 1_400); return selectedText ? [{ kind: "text" as const, value: selectedText }] : []; }
@@ -67,32 +78,31 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
   result.memorization.title = result.memorization.items.length || result.memorization.selections.length ? text(memory.title, 100) || "암기 액기스" : "";
 
   const recall = value.recall && typeof value.recall === "object" ? value.recall as Record<string, unknown> : {};
-  result.recall.shortCards = (Array.isArray(recall.shortCards) ? recall.shortCards : []).slice(0, 20).flatMap((item) => {
+  result.recall.shortCards = (Array.isArray(recall.shortCards) ? recall.shortCards : []).slice(0, 20).map((item) => {
     const card = item && typeof item === "object" ? item as Record<string, unknown> : {}; const question = text(card.question, 100); const answer = text(card.answer, 220);
-    if (!question && !answer) return []; if (!question || !answer) throw new Error("짧은 회상 키워드는 단서와 정답을 모두 입력해 주세요."); return [{ question, answer }];
+    return { question, answer };
   });
-  result.recall.flashCards = (Array.isArray(recall.flashCards) ? recall.flashCards : []).slice(0, 40).flatMap((item) => {
+  result.recall.flashCards = (Array.isArray(recall.flashCards) ? recall.flashCards : []).slice(0, 40).map((item) => {
     const card = item && typeof item === "object" ? item as Record<string, unknown> : {}; const cue = text(card.cue, 120); const cardValue = text(card.value, 300);
-    if (!cue && !cardValue) return []; if (!cue || !cardValue) throw new Error("단순 암기 카드는 표지와 암기값을 모두 입력해 주세요."); return [{ cue, value: cardValue }];
+    return { cue, value: cardValue };
   });
-  result.recall.quizzes = (Array.isArray(recall.quizzes) ? recall.quizzes : []).slice(0, 10).flatMap((item) => {
-    const quiz = item && typeof item === "object" ? item as Record<string, unknown> : {}; const question = text(quiz.question, 240); const options = lines(quiz.options, 4, 160); const answerIndex = Number.isInteger(quiz.answerIndex) ? Number(quiz.answerIndex) : -1; const explanation = text(quiz.explanation, 600);
-    if (!hasText(quiz)) return []; if (!question || options.length < 2 || answerIndex < 0 || answerIndex >= options.length) throw new Error("빠른 선택 퀴즈에는 질문, 2개 이상의 선택지, 정답을 입력해 주세요."); return [{ question, options, answerIndex, explanation }];
+  result.recall.quizzes = (Array.isArray(recall.quizzes) ? recall.quizzes : []).slice(0, 10).map((item) => {
+    const quiz = item && typeof item === "object" ? item as Record<string, unknown> : {}; const question = text(quiz.question, 240); const options = (Array.isArray(quiz.options) ? quiz.options : []).slice(0, 4).map((option) => text(option, 160)); const answerIndex = Number.isInteger(quiz.answerIndex) ? Number(quiz.answerIndex) : 0; const explanation = text(quiz.explanation, 600);
+    return { question, options, answerIndex, explanation };
   });
-  result.recall.sequences = (Array.isArray(recall.sequences) ? recall.sequences : []).slice(0, 10).flatMap((item) => {
-    const sequence = item && typeof item === "object" ? item as Record<string, unknown> : {}; const prompt = text(sequence.prompt, 240); const items = lines(sequence.items, 8, 160);
-    if (!hasText(sequence)) return []; if (!prompt || items.length < 2) throw new Error("순서 맞추기에는 안내 문장과 2개 이상의 순서 항목을 입력해 주세요."); return [{ prompt, items }];
+  result.recall.sequences = (Array.isArray(recall.sequences) ? recall.sequences : []).slice(0, 10).map((item) => {
+    const sequence = item && typeof item === "object" ? item as Record<string, unknown> : {}; const prompt = text(sequence.prompt, 240); const items = (Array.isArray(sequence.items) ? sequence.items : []).slice(0, 8).map((entry) => text(entry, 160));
+    return { prompt, items };
   });
   // Earlier 2D diagrams remain readable, but only 3D models are created by the new editor.
   result.recall.diagrams = (Array.isArray(recall.diagrams) ? recall.diagrams : []).slice(0, 8).flatMap((item) => {
     const diagram = item && typeof item === "object" ? item as Record<string, unknown> : {}; const nodes = lines(diagram.nodes, 6, 160); const blankIndex = Number.isInteger(diagram.blankIndex) ? Number(diagram.blankIndex) : -1; const title = text(diagram.title, 120) || "개념 구조 빈칸 채우기"; const explanation = text(diagram.explanation, 600);
-    if (!hasText(diagram)) return []; if (nodes.length < 2 || blankIndex < 0 || blankIndex >= nodes.length) throw new Error("기존 개념 구조에는 2개 이상의 개념 상자와 빈칸 위치를 입력해 주세요."); return [{ title, nodes, blankIndex, explanation }];
+    if (!hasText(diagram)) return []; return [{ title, nodes, blankIndex: Math.max(0, blankIndex), explanation }];
   });
   result.recall.conceptModels = (Array.isArray(recall.conceptModels) ? recall.conceptModels : []).slice(0, 6).flatMap((item) => {
     const model = item && typeof item === "object" ? item as Record<string, unknown> : {}; const shape = model.shape === "cube" || model.shape === "tetrahedron" || model.shape === "square_pyramid" ? model.shape : null;
-    if (!hasText(model)) return []; if (!shape) throw new Error("3D 개념도 도형을 선택해 주세요.");
-    const definition = conceptShapeDefinitions[shape]; const topic = text(model.topic, 140); const vertices = lines(model.vertices, definition.vertices, 120); const edges = lines(model.edges, definition.edges.length, 160);
-    if (!topic || vertices.length !== definition.vertices || edges.length !== definition.edges.length) throw new Error(`${definition.label} 개념도에는 주제, 꼭짓점 ${definition.vertices}개, 연결 설명 ${definition.edges.length}개를 모두 입력해 주세요.`); return [{ shape, topic, vertices, edges }];
+    if (!hasText(model) && !shape) return []; const safeShape = shape || "cube"; const definition = conceptShapeDefinitions[safeShape]; const topic = text(model.topic, 140); const vertices = Array.from({ length: definition.vertices }, (_, index) => text(Array.isArray(model.vertices) ? model.vertices[index] : "", 120)); const edges = Array.from({ length: definition.edges.length }, (_, index) => text(Array.isArray(model.edges) ? model.edges[index] : "", 160));
+    return [{ shape: safeShape, topic, vertices, edges }];
   });
   result.recall.conceptCanvases = (Array.isArray(recall.conceptCanvases) ? recall.conceptCanvases : []).slice(0, 6).flatMap((item) => {
     const canvas = item && typeof item === "object" ? item as Record<string, unknown> : {};
@@ -108,20 +118,28 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
       }
       const kind = element.kind === "ellipse" || element.kind === "rectangle" || element.kind === "polygon" || element.kind === "text" ? element.kind : null;
       const x = number(element.x); const y = number(element.y); const width = number(element.width); const height = number(element.height); const label = text(element.label, 240);
-      if (!kind || ![x, y, width, height].every(Number.isFinite) || !label || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 100.01 || y + height > 100.01) return [];
+      if (!kind || ![x, y, width, height].every(Number.isFinite) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > 100.01 || y + height > 100.01) return [];
       return [{ id, kind: kind as "ellipse" | "rectangle" | "polygon" | "text", x, y, width, height, label }];
     });
     const nodeIds = new Set(elements.filter((element) => element.kind !== "arrow").map((element) => element.id));
     const validElements = elements.filter((element) => element.kind !== "arrow" || (nodeIds.has(element.from) && nodeIds.has(element.to)));
-    if (!validElements.some((element) => element.kind !== "arrow")) throw new Error("개념 도형에는 하나 이상의 개념 요소를 추가해 주세요.");
     return [{ title, elements: validElements }];
   });
-  result.examples = (Array.isArray(value.examples) ? value.examples : []).slice(0, 12).flatMap((item) => {
+  result.recall.conceptGraphs3D = (Array.isArray(recall.conceptGraphs3D) ? recall.conceptGraphs3D : []).slice(0, 6).map((item, graphIndex) => {
+    const graph = item && typeof item === "object" ? item as Record<string, unknown> : {};
+    const rawNodes = Array.isArray(graph.nodes) ? graph.nodes.slice(0, 48) : [];
+    const nodes = rawNodes.map((item, index) => { const node = item && typeof item === "object" ? item as Record<string, unknown> : {}; const shape: ConceptGraph3DNode["shape"] = node.shape === "box" || node.shape === "text" ? node.shape : "sphere"; return { id: text(node.id, 64) || `node-${graphIndex}-${index}`, shape, x: bounded(node.x), y: bounded(node.y), z: bounded(node.z), label: text(node.label, 240) }; });
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const edges = (Array.isArray(graph.edges) ? graph.edges : []).slice(0, 72).flatMap((item, index) => { const edge = item && typeof item === "object" ? item as Record<string, unknown> : {}; const from = text(edge.from, 64); const to = text(edge.to, 64); return from && to && nodeIds.has(from) && nodeIds.has(to) ? [{ id: text(edge.id, 64) || `edge-${graphIndex}-${index}`, from, to, label: text(edge.label, 180), directed: edge.directed !== false }] : []; });
+    const cameraValue = graph.camera && typeof graph.camera === "object" ? graph.camera as Record<string, unknown> : {};
+    return { title: text(graph.title, 140), nodes, edges, camera: { x: bounded(cameraValue.x, 4, -20, 20), y: bounded(cameraValue.y, 4, -20, 20), z: bounded(cameraValue.z, 7, 2, 30), zoom: bounded(cameraValue.zoom, 1, .4, 3) } };
+  });
+  result.examples = (Array.isArray(value.examples) ? value.examples : []).slice(0, 12).map((item) => {
     const example = item && typeof item === "object" ? item as Record<string, unknown> : {}; const situation = text(example.situation, 700); const misconception = text(example.misconception, 700); const contrast = text(example.contrast, 900); const explanation = text(example.explanation, 1000); const takeaway = text(example.takeaway, 300);
-    if (!situation && !misconception && !contrast && !explanation && !takeaway) return []; if (!situation || !explanation || !takeaway) throw new Error("예시는 상황, 설명, 기억할 핵심을 모두 입력해 주세요."); return [{ situation, misconception, contrast, explanation, takeaway }];
+    return { situation, misconception, contrast, explanation, takeaway };
   });
   return result;
 }
 
-export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.recall.conceptCanvases.length || materials.examples.length); }
+export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.recall.conceptCanvases.length || materials.recall.conceptGraphs3D.length || materials.examples.length); }
 export function customMaterialsForReview(materials: CustomMaterials) { return hasCustomMaterials(materials) ? JSON.stringify(materials) : "없음"; }

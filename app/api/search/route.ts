@@ -57,7 +57,10 @@ export async function GET(request: Request) {
       owner_display_name AS ownerDisplayName, view_count AS viewCount, created_at AS createdAt, status, publish_mode AS publishMode,
       mechanical_status AS mechanicalStatus, substr(extracted_text,1,1200) AS extractedTextPreview, questions_json AS questionsJson,
       recall_json AS recallJson, text_only AS textOnly, mechanical_error AS mechanicalError, custom_materials_json AS customMaterialsJson,
-      attachments_json AS attachmentsJson, subject, tags_json AS tagsJson, CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine
+      attachments_json AS attachmentsJson, subject, tags_json AS tagsJson, CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine,
+      (SELECT f.title FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS bookFolderTitle,
+      (SELECT fi.page_start FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageStart,
+      (SELECT fi.page_end FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageEnd
       FROM contributions WHERE id IN (${placeholders})`).bind(user?.userId || "", ...contributionIds).all();
     (rows.results as Array<Record<string, unknown>>).forEach((row) => contributionMap.set(String(row.id), { ...row, attachments: (() => { try { return JSON.parse(String(row.attachmentsJson || "[]")); } catch { return []; } })() }));
   }
@@ -69,9 +72,9 @@ export async function GET(request: Request) {
   }
   if (folderIds.length) {
     const placeholders = folderIds.map(() => "?").join(",");
-    const rows = await DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson, f.owner_display_name AS ownerDisplayName,
+    const rows = await DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson, f.folder_type AS folderType, f.owner_display_name AS ownerDisplayName,
       COUNT(fi.contribution_id) AS itemCount FROM public_folders f LEFT JOIN public_folder_items fi ON fi.folder_id = f.id
-      WHERE f.id IN (${placeholders}) GROUP BY f.id`).bind(...folderIds).all();
+      WHERE f.visibility_state = 'published' AND f.id IN (${placeholders}) GROUP BY f.id`).bind(...folderIds).all();
     (rows.results as Array<Record<string, unknown>>).forEach((row) => folderMap.set(String(row.id), row));
   }
   const results = searchRows.map((row) => {
