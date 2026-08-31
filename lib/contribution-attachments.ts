@@ -3,9 +3,11 @@ export type StoredAttachment = {
   contentType: string;
   objectKey: string;
   size: number;
+  role?: "source" | "corrected";
+  sourceAttachmentIndex?: number;
 };
 
-export type PublicAttachment = Pick<StoredAttachment, "originalName" | "contentType" | "size">;
+export type PublicAttachment = Pick<StoredAttachment, "originalName" | "contentType" | "size" | "role" | "sourceAttachmentIndex">;
 
 type LegacyAttachment = Pick<StoredAttachment, "originalName" | "contentType" | "objectKey">;
 
@@ -20,7 +22,9 @@ function asAttachment(value: unknown): StoredAttachment | null {
   const contentType = asString(row.contentType, 160);
   const objectKey = asString(row.objectKey, 600);
   const size = typeof row.size === "number" && Number.isFinite(row.size) && row.size >= 0 ? row.size : 0;
-  return originalName && contentType && objectKey ? { originalName, contentType, objectKey, size } : null;
+  const role = row.role === "corrected" ? "corrected" as const : row.role === "source" ? "source" as const : undefined;
+  const sourceAttachmentIndex = Number.isInteger(row.sourceAttachmentIndex) && Number(row.sourceAttachmentIndex) >= 0 ? Number(row.sourceAttachmentIndex) : undefined;
+  return originalName && contentType && objectKey ? { originalName, contentType, objectKey, size, role, sourceAttachmentIndex } : null;
 }
 
 export function storedAttachments(raw: string | null | undefined, legacy: LegacyAttachment): StoredAttachment[] {
@@ -37,5 +41,5 @@ export function storedAttachments(raw: string | null | undefined, legacy: Legacy
 }
 
 export function publicAttachments(attachments: StoredAttachment[]): PublicAttachment[] {
-  return attachments.map(({ originalName, contentType, size }) => ({ originalName, contentType, size }));
+  return attachments.map(({ originalName, contentType, size, role, sourceAttachmentIndex }) => ({ originalName, contentType, size, role, sourceAttachmentIndex }));
 }

@@ -22,7 +22,7 @@ type Asset = {
   examples: number;
   questions: number;
   fileUrl?: string;
-  attachments?: Array<{ originalName: string; contentType: string; size: number; url: string }>;
+  attachments?: Array<{ originalName: string; contentType: string; size: number; url: string; role?: "source" | "corrected"; sourceAttachmentIndex?: number }>;
   sourceNote?: string;
   originalName?: string;
   ownerName?: string;
@@ -69,7 +69,7 @@ type ContributionRecord = {
   customMaterialsJson?: string;
   subject?: string;
   tags?: string[];
-  attachments?: Array<{ originalName: string; contentType: string; size: number }>;
+  attachments?: Array<{ originalName: string; contentType: string; size: number; role?: "source" | "corrected"; sourceAttachmentIndex?: number }>;
   bookFolderTitle?: string | null;
   pageStart?: number | null;
   pageEnd?: number | null;
@@ -115,7 +115,7 @@ type DraftRecord = {
   aiReviewLocked?: number;
   aiAppliedCount?: number;
   updatedAt?: string;
-  attachments?: Array<{ originalName: string; contentType: string; size: number; url: string }>;
+  attachments?: Array<{ originalName: string; contentType: string; size: number; url: string; role?: "source" | "corrected"; sourceAttachmentIndex?: number }>;
 };
 
 function contributionToAsset(item: ContributionRecord): Asset {
@@ -791,11 +791,12 @@ function SelectedToolContent({ selected, asset, materials, onStart }: { selected
 }
 
 function ImageFixTool({ asset, settings }: { asset: Asset; settings: CustomMaterials["tools"]["imageFixes"] }) {
-  const imageAttachment = (asset.attachments || []).find((item) => item.contentType.startsWith("image/"));
-  const image = imageAttachment?.url || previewForAsset(asset);
   const setting = settings[0];
+  const corrected = setting?.correctedAttachmentIndex === undefined ? undefined : asset.attachments?.[setting.correctedAttachmentIndex];
+  const imageAttachment = corrected || (asset.attachments || []).find((item) => item.contentType.startsWith("image/"));
+  const image = imageAttachment?.url || previewForAsset(asset);
   if (!image || (!imageAttachment && !/\.(png|jpe?g|webp)(?:\?|$)/i.test(image))) return <div className="empty-state compact-empty"><strong>이미지 자료에서 사용할 수 있어요.</strong><span>사진 또는 이미지 파일을 선택해 주세요.</span></div>;
-  return <div className="image-fix-tool"><div className="image-fix-preview"><img src={image} alt="보정된 원문" style={{ transform: `rotate(${setting?.rotation || 0}deg)`, filter: `brightness(${setting?.brightness || 100}%) contrast(${setting?.contrast || 100}%) grayscale(${setting?.grayscale ? 1 : 0})` }} /></div><p>기여자가 저장한 회전·명암·대비 보정이 적용된 보기입니다.</p></div>;
+  return <div className="image-fix-tool"><div className="image-fix-preview"><img src={image} alt="보정된 원문" style={corrected ? undefined : { transform: `rotate(${setting?.rotation || 0}deg)`, filter: `brightness(${setting?.brightness || 100}%) contrast(${setting?.contrast || 100}%) grayscale(${setting?.grayscale ? 1 : 0})` }} /></div><p>{corrected ? "기여자가 저장한 원근 보정 WebP입니다." : "기여자가 저장한 회전·명암·대비 보정이 적용된 보기입니다."}</p></div>;
 }
 
 function ProcessedTool({ asset, mode }: { asset: Asset; mode: "ocr" | "question_split" }) {
@@ -1218,7 +1219,7 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
     setCustomMaterials({ ...base, ...incoming, memorization: { ...base.memorization, ...incoming.memorization }, recall: { ...base.recall, ...incoming.recall }, examples: incoming.examples || [], tools: { ...base.tools, ...incoming.tools } });
     const options = initialDraft.mechanicalOptions || {}; setOcr(Boolean(options.ocr)); setTextOnly(Boolean(options.textOnly)); setSplitQuestionSet(Boolean(options.splitQuestions)); setCreateRecall(Boolean(options.createRecall));
     setPhase("workspace"); setDraftState("saved");
-    Promise.all((initialDraft.attachments || []).map(async (attachment) => {
+    Promise.all((initialDraft.attachments || []).filter((attachment) => attachment.role !== "corrected").map(async (attachment) => {
       const response = await fetch(attachment.url); const blob = await response.blob(); return new File([blob], attachment.originalName, { type: attachment.contentType });
     })).then((loaded) => { if (active) setFiles(loaded); }).catch(() => { if (active) setDraftState("error"); });
     return () => { active = false; };
@@ -1366,15 +1367,32 @@ function ContributionToolEditor({ tool, props }: { tool: DetailToolKey; props: C
   return <PluginAuthoring materials={props.customMaterials} onChange={props.setCustomMaterials} />;
 }
 
+async function detectDocumentCorners(file: File) {
+  const bitmap = await createImageBitmap(file); const scale = Math.min(1, 600 / Math.max(bitmap.width, bitmap.height)); const width = Math.max(1, Math.round(bitmap.width * scale)); const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height; const context = canvas.getContext("2d", { willReadFrequently: true })!; context.drawImage(bitmap, 0, 0, width, height); bitmap.close(); const pixels = context.getImageData(0,0,width,height).data;
+  const sample = [[2,2],[width-3,2],[width-3,height-3],[2,height-3]]; const background = sample.reduce((sum,[x,y]) => { const offset=(y*width+x)*4; return [sum[0]+pixels[offset],sum[1]+pixels[offset+1],sum[2]+pixels[offset+2]]; },[0,0,0]).map((value)=>value/4);
+  let minX=width,minY=height,maxX=0,maxY=0,count=0; for(let y=0;y<height;y+=2) for(let x=0;x<width;x+=2){const offset=(y*width+x)*4; const delta=Math.abs(pixels[offset]-background[0])+Math.abs(pixels[offset+1]-background[1])+Math.abs(pixels[offset+2]-background[2]); if(delta>72){minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);count++;}}
+  if(count < width*height*.015) return [{x:.05,y:.05},{x:.95,y:.05},{x:.95,y:.95},{x:.05,y:.95}]; const pad=.012; return [{x:Math.max(0,minX/width-pad),y:Math.max(0,minY/height-pad)},{x:Math.min(1,maxX/width+pad),y:Math.max(0,minY/height-pad)},{x:Math.min(1,maxX/width+pad),y:Math.min(1,maxY/height+pad)},{x:Math.max(0,minX/width-pad),y:Math.min(1,maxY/height+pad)}];
+}
+
+async function renderCorrectedWebp(file: File, fix: CustomMaterials["tools"]["imageFixes"][number]) {
+  const bitmap=await createImageBitmap(file); const scale=Math.min(1,1600/Math.max(bitmap.width,bitmap.height)); const sourceWidth=Math.max(1,Math.round(bitmap.width*scale)); const sourceHeight=Math.max(1,Math.round(bitmap.height*scale)); const sourceCanvas=document.createElement("canvas"); sourceCanvas.width=sourceWidth;sourceCanvas.height=sourceHeight; const sourceContext=sourceCanvas.getContext("2d",{willReadFrequently:true})!;sourceContext.drawImage(bitmap,0,0,sourceWidth,sourceHeight);bitmap.close(); const source=sourceContext.getImageData(0,0,sourceWidth,sourceHeight).data; const [a,b,c,d]=fix.corners;
+  const distance=(p:{x:number;y:number},q:{x:number;y:number})=>Math.hypot((p.x-q.x)*sourceWidth,(p.y-q.y)*sourceHeight); let targetWidth=Math.max(120,Math.round((distance(a,b)+distance(d,c))/2));let targetHeight=Math.max(120,Math.round((distance(a,d)+distance(b,c))/2)); const targetScale=Math.min(1,1600/Math.max(targetWidth,targetHeight));targetWidth=Math.round(targetWidth*targetScale);targetHeight=Math.round(targetHeight*targetScale); const warped=document.createElement("canvas");warped.width=targetWidth;warped.height=targetHeight;const targetContext=warped.getContext("2d")!;const output=targetContext.createImageData(targetWidth,targetHeight); const brightness=fix.brightness/100,contrast=fix.contrast/100;
+  for(let y=0;y<targetHeight;y++){const v=y/Math.max(1,targetHeight-1);for(let x=0;x<targetWidth;x++){const u=x/Math.max(1,targetWidth-1);const sx=((1-u)*(1-v)*a.x+u*(1-v)*b.x+u*v*c.x+(1-u)*v*d.x)*sourceWidth;const sy=((1-u)*(1-v)*a.y+u*(1-v)*b.y+u*v*c.y+(1-u)*v*d.y)*sourceHeight;const sourceOffset=(Math.max(0,Math.min(sourceHeight-1,Math.round(sy)))*sourceWidth+Math.max(0,Math.min(sourceWidth-1,Math.round(sx))))*4;const targetOffset=(y*targetWidth+x)*4;let r=source[sourceOffset],g=source[sourceOffset+1],blue=source[sourceOffset+2];if(fix.grayscale){const gray=.299*r+.587*g+.114*blue;r=g=blue=gray;}output.data[targetOffset]=Math.max(0,Math.min(255,(r-128)*contrast+128))*brightness;output.data[targetOffset+1]=Math.max(0,Math.min(255,(g-128)*contrast+128))*brightness;output.data[targetOffset+2]=Math.max(0,Math.min(255,(blue-128)*contrast+128))*brightness;output.data[targetOffset+3]=255;}}
+  targetContext.putImageData(output,0,0); const radians=fix.rotation*Math.PI/180;const finalCanvas=document.createElement("canvas");finalCanvas.width=Math.ceil(Math.abs(targetWidth*Math.cos(radians))+Math.abs(targetHeight*Math.sin(radians)));finalCanvas.height=Math.ceil(Math.abs(targetWidth*Math.sin(radians))+Math.abs(targetHeight*Math.cos(radians)));const finalContext=finalCanvas.getContext("2d")!;finalContext.translate(finalCanvas.width/2,finalCanvas.height/2);finalContext.rotate(radians);finalContext.drawImage(warped,-targetWidth/2,-targetHeight/2); return await new Promise<Blob>((resolve,reject)=>finalCanvas.toBlob((blob)=>blob?resolve(blob):reject(new Error("WebP 생성 실패")),"image/webp",.86));
+}
+
 function ImageFixAuthoring({ props }: { props: ContributionWorkspaceProps }) {
   const imageIndices = props.files.map((file, index) => isImageFile(file) ? index : -1).filter((index) => index >= 0);
-  const [index, setIndex] = useState(imageIndices[0] ?? 0); const [src, setSrc] = useState("");
+  const [index, setIndex] = useState(imageIndices[0] ?? 0); const [src, setSrc] = useState(""); const [busy,setBusy]=useState(false); const [message,setMessage]=useState("");
   const saved = props.customMaterials.tools.imageFixes.find((item) => item.attachmentIndex === index);
-  const fix = saved || { attachmentIndex: index, rotation: 0, brightness: 100, contrast: 100, grayscale: false, corners: [{x:.05,y:.05},{x:.95,y:.05},{x:.95,y:.95},{x:.05,y:.95}] };
+  const fix: CustomMaterials["tools"]["imageFixes"][number] = saved || { attachmentIndex: index, rotation: 0, brightness: 100, contrast: 100, grayscale: false, corners: [{x:.05,y:.05},{x:.95,y:.05},{x:.95,y:.95},{x:.05,y:.95}] };
   useEffect(() => { const file = props.files[index]; if (!file || !isImageFile(file)) { setSrc(""); return; } const url = URL.createObjectURL(file); setSrc(url); return () => URL.revokeObjectURL(url); }, [index, props.files]);
   const save = (next: typeof fix) => props.setCustomMaterials({ ...props.customMaterials, tools: { ...props.customMaterials.tools, imageFixes: [...props.customMaterials.tools.imageFixes.filter((item) => item.attachmentIndex !== index), next] } });
+  const detect=async()=>{setBusy(true);setMessage("");try{save({...fix,corners:await detectDocumentCorners(props.files[index])});setMessage("문서 경계를 감지했습니다. 네 점을 필요에 맞게 조정하세요.");}catch{setMessage("자동 경계를 찾지 못했습니다. 네 점을 직접 조정해 주세요.");}finally{setBusy(false);}};
+  const store=async()=>{if(!props.draftId){setMessage("초안 저장이 끝난 뒤 다시 시도해 주세요.");return;}setBusy(true);setMessage("");try{const blob=await renderCorrectedWebp(props.files[index],fix);const body=new FormData();body.set("draftId",props.draftId);body.set("sourceAttachmentIndex",String(index));body.set("file",new File([blob],"corrected.webp",{type:"image/webp"}));const response=await fetch("/api/corrected-image",{method:"POST",body});const data=await response.json() as {correctedAttachmentIndex?:number;error?:string};if(!response.ok||data.correctedAttachmentIndex===undefined){setMessage(data.error||"보정 이미지를 저장하지 못했습니다.");return;}save({...fix,correctedAttachmentIndex:data.correctedAttachmentIndex});setMessage(`보정 WebP를 저장했습니다. (${(blob.size/1024).toFixed(0)}KB)`);}catch{setMessage("보정 WebP를 만들지 못했습니다.");}finally{setBusy(false);}};
   if (!imageIndices.length) return <div className="empty-state compact-empty"><strong>이미지 파일을 추가해 주세요.</strong><span>보정은 브라우저에서 처리되어 외부 API 비용이 들지 않습니다.</span></div>;
-  return <div className="image-fix-authoring"><label><span>보정할 이미지</span><select value={index} onChange={(event) => setIndex(Number(event.target.value))}>{imageIndices.map((item) => <option key={item} value={item}>{props.files[item].name}</option>)}</select></label><div className="image-fix-live"><img src={src} alt="보정 미리보기" style={{ transform: `rotate(${fix.rotation}deg)`, filter: `brightness(${fix.brightness}%) contrast(${fix.contrast}%) grayscale(${fix.grayscale ? 1 : 0})` }} /></div><div className="image-fix-controls"><label><span>회전 {fix.rotation}°</span><input type="range" min="-15" max="15" value={fix.rotation} onChange={(event) => save({ ...fix, rotation: Number(event.target.value) })} /></label><label><span>명암 {fix.brightness}%</span><input type="range" min="60" max="160" value={fix.brightness} onChange={(event) => save({ ...fix, brightness: Number(event.target.value) })} /></label><label><span>대비 {fix.contrast}%</span><input type="range" min="60" max="160" value={fix.contrast} onChange={(event) => save({ ...fix, contrast: Number(event.target.value) })} /></label><label className="check-row"><input type="checkbox" checked={fix.grayscale} onChange={(event) => save({ ...fix, grayscale: event.target.checked })} /><span>흑백 문서 모드</span></label></div><button className="secondary-button" type="button" onClick={() => save({ ...fix, rotation: 0, brightness: 100, contrast: 100, grayscale: false })}>보정 초기화</button><small>자동 경계의 기본 네 모서리는 저장되며 회전·명암·대비 설정은 공개 자료에도 적용됩니다.</small></div>;
+  return <div className="image-fix-authoring"><label><span>보정할 이미지</span><select value={index} onChange={(event) => setIndex(Number(event.target.value))}>{imageIndices.map((item) => <option key={item} value={item}>{props.files[item].name}</option>)}</select></label><div className="image-fix-live corner-preview"><img src={src} alt="보정 미리보기" style={{ transform: `rotate(${fix.rotation}deg)`, filter: `brightness(${fix.brightness}%) contrast(${fix.contrast}%) grayscale(${fix.grayscale ? 1 : 0})` }} />{fix.corners.map((corner,cornerIndex)=><span key={cornerIndex} style={{left:`${corner.x*100}%`,top:`${corner.y*100}%`}}>{cornerIndex+1}</span>)}</div><div className="image-fix-actions"><button className="secondary-button" type="button" disabled={busy} onClick={()=>void detect()}>자동 경계 감지</button><button className="primary-button" type="button" disabled={busy} onClick={()=>void store()}>{busy?"처리 중…":"원근 보정 WebP 저장"}</button></div><div className="corner-controls">{fix.corners.map((corner,cornerIndex)=><fieldset key={cornerIndex}><legend>모서리 {cornerIndex+1}</legend><label><span>X {Math.round(corner.x*100)}%</span><input type="range" min="0" max="100" value={corner.x*100} onChange={(event)=>save({...fix,corners:fix.corners.map((point,itemIndex)=>itemIndex===cornerIndex?{...point,x:Number(event.target.value)/100}:point)})}/></label><label><span>Y {Math.round(corner.y*100)}%</span><input type="range" min="0" max="100" value={corner.y*100} onChange={(event)=>save({...fix,corners:fix.corners.map((point,itemIndex)=>itemIndex===cornerIndex?{...point,y:Number(event.target.value)/100}:point)})}/></label></fieldset>)}</div><div className="image-fix-controls"><label><span>회전 {fix.rotation}°</span><input type="range" min="-15" max="15" value={fix.rotation} onChange={(event) => save({ ...fix, rotation: Number(event.target.value) })} /></label><label><span>명암 {fix.brightness}%</span><input type="range" min="60" max="160" value={fix.brightness} onChange={(event) => save({ ...fix, brightness: Number(event.target.value) })} /></label><label><span>대비 {fix.contrast}%</span><input type="range" min="60" max="160" value={fix.contrast} onChange={(event) => save({ ...fix, contrast: Number(event.target.value) })} /></label><label className="check-row"><input type="checkbox" checked={fix.grayscale} onChange={(event) => save({ ...fix, grayscale: event.target.checked })} /><span>흑백 문서 모드</span></label></div><button className="secondary-button" type="button" onClick={() => save({ ...fix, rotation: 0, brightness: 100, contrast: 100, grayscale: false, corners:[{x:.05,y:.05},{x:.95,y:.05},{x:.95,y:.95},{x:.05,y:.95}] })}>보정 초기화</button>{message&&<p className="record-message">{message}</p>}<small>경계 감지·원근 보정·WebP 변환은 브라우저 안에서 처리되어 외부 API 비용이 들지 않습니다.</small></div>;
 }
 
 function OCRAuthoring({ props }: { props: ContributionWorkspaceProps }) {

@@ -94,9 +94,10 @@ export async function POST(request: Request) {
     ai_review_locked AS aiReviewLocked
     FROM contribution_drafts WHERE id = ? AND owner_id = ?`).bind(draftId, user.userId).first<Record<string, unknown>>() : null;
   if (draftId && !draft) return Response.json({ error: "공개할 초안을 찾지 못했습니다." }, { status: 404 });
+  const draftAttachments = (() => { try { return JSON.parse(String(draft?.attachmentsJson || "[]")) as StoredAttachment[]; } catch { return []; } })();
   if (!files.length && draft) {
-    const draftAttachments = (() => { try { return JSON.parse(String(draft.attachmentsJson || "[]")) as StoredAttachment[]; } catch { return []; } })();
-    files = (await Promise.all(draftAttachments.map(async (attachment) => { const object = await runtime.UPLOADS.get(attachment.objectKey); if (!object) return null; return new File([await new Response(object.body).arrayBuffer()], attachment.originalName, { type: attachment.contentType }); }))).filter((file): file is File => Boolean(file));
+    const sourceAttachments = draftAttachments.filter((attachment) => attachment.role !== "corrected");
+    files = (await Promise.all(sourceAttachments.map(async (attachment) => { const object = await runtime.UPLOADS.get(attachment.objectKey); if (!object) return null; return new File([await new Response(object.body).arrayBuffer()], attachment.originalName, { type: attachment.contentType }); }))).filter((file): file is File => Boolean(file));
   }
   const title = String(form.get("title") ?? draft?.title ?? "").trim();
   const sourceNote = String(form.get("sourceNote") ?? draft?.sourceNote ?? "").trim();
@@ -134,7 +135,7 @@ export async function POST(request: Request) {
   if (files.some((file) => !ALLOWED_TYPES.has(file.type))) return Response.json({ error: "지원하지 않는 파일 형식이 포함되어 있습니다." }, { status: 415 });
 
   const id = crypto.randomUUID();
-  const attachments: StoredAttachment[] = await Promise.all(files.map(async (file, index) => {
+  const uploadedAttachments: StoredAttachment[] = await Promise.all(files.map(async (file, index) => {
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload";
     const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${index}-${safeName}`;
     const bytes = await file.arrayBuffer();
@@ -142,8 +143,10 @@ export async function POST(request: Request) {
       httpMetadata: { contentType: file.type },
       customMetadata: { contributionId: id, originalName: file.name, ownerId: user.userId, publishMode, attachmentIndex: String(index) },
     });
-    return { originalName: file.name, contentType: file.type, objectKey, size: file.size };
+    return { originalName: file.name, contentType: file.type, objectKey, size: file.size, role: "source" };
   }));
+  const attachments: StoredAttachment[] = [...uploadedAttachments, ...draftAttachments.filter((attachment) => attachment.role === "corrected")];
+  customMaterials = { ...customMaterials, tools: { ...customMaterials.tools, imageFixes: customMaterials.tools.imageFixes.map((fix) => { const correctedAttachmentIndex = attachments.findIndex((attachment) => attachment.role === "corrected" && attachment.sourceAttachmentIndex === fix.attachmentIndex); return correctedAttachmentIndex >= 0 ? { ...fix, correctedAttachmentIndex } : fix; }) } };
   const effectiveMechanicalOptions: MechanicalOptions = {
     ...mechanicalOptions,
     // AI 검수에는 원본 이미지·파일을 전달하지 않고, 추출 텍스트만 전달한다.
