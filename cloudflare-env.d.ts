@@ -4,7 +4,7 @@ declare module "cloudflare:workers" {
 
 interface D1PreparedStatement {
   bind(...values: unknown[]): D1PreparedStatement;
-  run(): Promise<unknown>;
+  run(): Promise<{ meta: { changes?: number } }>;
   all(): Promise<{ results: unknown[] }>;
   first<T = Record<string, unknown>>(): Promise<T | null>;
 }
@@ -27,6 +27,7 @@ interface R2Bucket {
     body: ReadableStream<Uint8Array>;
     writeHttpMetadata(headers: Headers): void;
   } | null>;
+  delete(key: string): Promise<void>;
 }
 
 interface Fetcher {
