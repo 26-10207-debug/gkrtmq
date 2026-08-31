@@ -737,19 +737,73 @@ function AssetSourceViewer({ asset }: { asset: Asset }) {
 
 function LearningDetailExperience({ asset, onBack, onStart, onEdit }: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void; onEdit: () => void }) {
   const materials = asset.customMaterials || emptyCustomMaterials();
-  const [openTool, setOpenTool] = useState<"memory" | "examples" | "concept" | "description" | null>(null);
-  const hasRecall = Boolean(materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length);
-  const hasMemory = Boolean(hasRecall || materials.memorization.items.length || materials.memorization.selections.length);
-  const hasExamples = materials.examples.length > 0;
-  const hasConcept = Boolean(materials.recall.conceptGraphs3D.length || materials.recall.conceptCanvases.length || materials.recall.conceptModels.length || materials.recall.diagrams.length);
-  const hasDescription = Boolean(asset.sourceNote || asset.extractedTextPreview || asset.description);
-  const tools: Array<{ key: NonNullable<typeof openTool>; title: string; description: string; available: boolean }> = [
-    { key: "description", title: "설명", description: "자료의 맥락과 원문 설명", available: hasDescription },
-    { key: "memory", title: "핵심 암기 자료", description: "선택 영역·회상 카드·암기 카드", available: hasMemory },
-    { key: "examples", title: "예시로 설명", description: "상황과 대조로 개념 이해", available: hasExamples },
-    { key: "concept", title: "개념 도형", description: "3D 공간의 개념과 연결", available: hasConcept },
-  ];
-  return <main className="learning-detail-main unified-detail"><div className="authoring-statusbar"><button className="back-button" type="button" onClick={onBack}>← 검색 결과</button><div><span>{asset.subject || "분류 없음"}</span><span>{asset.ownerName || asset.sourceName || "Dumb Can Learn"}</span></div><div>{asset.isMine && asset.isUpload && <button className="secondary-button" type="button" onClick={onEdit}>편집</button>}</div></div><header className="detail-title-on-background"><p className="eyebrow">{asset.type}</p><h1>{asset.title}</h1><div className="tag-row">{asset.tags.slice(0, 4).map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></header><section className="final-contribution-form detail-workspace"><AssetSourceViewer asset={asset} /><section className="final-tool-column"><div className="contribution-tool-stack">{tools.map((tool) => <section className={openTool === tool.key ? "contribution-tool active" : "contribution-tool"} key={tool.key}><button className="contribution-tool-capsule" type="button" onClick={() => setOpenTool(openTool === tool.key ? null : tool.key)}><span><strong>{tool.title}</strong><small>{tool.description}</small></span><b>{openTool === tool.key ? "−" : "→"}</b></button>{openTool === tool.key && <div className="contribution-tool-drawer">{tool.available ? <LearningToolContent tool={tool.key} asset={asset} materials={materials} onStart={onStart} /> : <div className="empty-state compact-empty"><strong>아직 만든 도구가 없습니다.</strong><span>기여자가 이 학습 도구를 추가하면 여기에서 볼 수 있습니다.</span></div>}</div>}</section>)}</div>{asset.isMine && asset.isUpload && <AddToFolder asset={asset} />}{asset.isReference && asset.sourceUrl && <a className="secondary-button" href={asset.sourceUrl} target="_blank" rel="noreferrer">출처 원문 열기 ↗</a>}</section></section></main>;
+  const [menu, setMenu] = useState<"description" | "tools" | "ai">("tools");
+  return <main className="learning-detail-main unified-detail"><div className="authoring-statusbar"><button className="back-button" type="button" onClick={onBack}>← 검색 결과</button><div><span>{asset.subject || "분류 없음"}</span><span>{asset.ownerName || asset.sourceName || "Dumb Can Learn"}</span></div><div>{asset.isMine && asset.isUpload && <button className="secondary-button" type="button" onClick={onEdit}>편집</button>}</div></div><header className="detail-title-on-background"><p className="eyebrow">{asset.type}</p><h1>{asset.title}</h1><div className="tag-row">{asset.tags.slice(0, 4).map((tag) => <span className="tag" key={tag}>{tag}</span>)}</div></header><section className="final-contribution-form detail-workspace"><AssetSourceViewer asset={asset} /><section className="final-tool-column"><nav className="detail-menu-tabs" aria-label="자료 메뉴">{([['description','설명'],['tools','Tools'],['ai','AI']] as const).map(([key, label]) => <button key={key} type="button" className={menu === key ? "active" : ""} aria-pressed={menu === key} onClick={() => setMenu(key)}>{label}</button>)}</nav><div className="detail-menu-panel">{menu === "description" && <LearningToolContent tool="description" asset={asset} materials={materials} onStart={onStart} />}{menu === "tools" && <DetailToolsPanel asset={asset} materials={materials} onStart={onStart} />}{menu === "ai" && <section className="ai-tool-panel"><span className="tool-panel-kicker">AI</span><h2>자료와 함께 묻고 이해하기</h2><p>학습 AI 도구는 준비 중입니다. 원문 파일은 동의 없이 외부 AI에 전달되지 않습니다.</p><button className="primary-button compact" type="button" onClick={() => onStart("plan")}>AI 학습 코스 열기</button></section>}</div>{asset.isMine && asset.isUpload && <AddToFolder asset={asset} />}{asset.isReference && asset.sourceUrl && <a className="secondary-button" href={asset.sourceUrl} target="_blank" rel="noreferrer">출처 원문 열기 ↗</a>}</section></section></main>;
+}
+
+type DetailToolKey = "image_fix" | "ocr" | "question_split" | "fastquiz" | "examples" | "concept" | "memorization" | "blank" | "plugin";
+const detailTools: Array<{ key: DetailToolKey; title: string; icon: string; description: string }> = [
+  { key: "image_fix", title: "이미지 고정", icon: "◇", description: "비스듬하고 굴곡진 촬영 이미지를 반듯하게 봅니다." },
+  { key: "ocr", title: "OCR", icon: "Aa", description: "이미지와 문서에서 인식한 글자를 확인합니다." },
+  { key: "question_split", title: "문항 쪼개기", icon: "✂", description: "문제 번호를 기준으로 문항을 나눕니다." },
+  { key: "fastquiz", title: "Fastquiz", icon: "⚡", description: "설명을 읽고 빠르게 답을 고르는 스피드 퀴즈입니다." },
+  { key: "examples", title: "예시 제시", icon: "例", description: "상황과 대조 예시로 개념을 이해합니다." },
+  { key: "concept", title: "개념 도형", icon: "⬡", description: "개념 사이의 구조와 연결을 살펴봅니다." },
+  { key: "memorization", title: "암기 자료 제작", icon: "▤", description: "핵심 문장과 암기 카드를 모아 봅니다." },
+  { key: "blank", title: "빈칸", icon: "＿", description: "개념 구조의 빈칸을 직접 채웁니다." },
+  { key: "plugin", title: "플러그인", icon: "＋", description: "추가 학습 도구를 연결합니다." },
+];
+
+function DetailToolsPanel({ asset, materials, onStart }: { asset: Asset; materials: CustomMaterials; onStart: (mode: StudyMode) => void }) {
+  const [selected, setSelected] = useState<DetailToolKey>("image_fix");
+  const tool = detailTools.find((item) => item.key === selected)!;
+  return <section className="detail-tools-panel"><div className="tool-orb-grid">{detailTools.map((item, index) => <button key={item.key} type="button" className={`tool-orb tone-${index % 3} ${selected === item.key ? "active" : ""}`} aria-pressed={selected === item.key} onClick={() => setSelected(item.key)}><b>{item.icon}</b><span>{item.title}</span></button>)}</div><section className="selected-tool-content" role="tabpanel"><header><span className="tool-panel-kicker">TOOL</span><h2>{tool.title}</h2><p>{tool.description}</p></header><SelectedToolContent selected={selected} asset={asset} materials={materials} onStart={onStart} /></section></section>;
+}
+
+function SelectedToolContent({ selected, asset, materials, onStart }: { selected: DetailToolKey; asset: Asset; materials: CustomMaterials; onStart: (mode: StudyMode) => void }) {
+  if (selected === "image_fix") return <ImageFixTool asset={asset} />;
+  if (selected === "ocr" || selected === "question_split") return <ProcessedTool asset={asset} mode={selected} />;
+  if (selected === "fastquiz") return <FastQuizTool quizzes={materials.recall.quizzes} />;
+  if (selected === "examples") return <LearningToolContent tool="examples" asset={asset} materials={materials} onStart={onStart} />;
+  if (selected === "concept") return <LearningToolContent tool="concept" asset={asset} materials={materials} onStart={onStart} />;
+  if (selected === "memorization") return <LearningToolContent tool="memory" asset={asset} materials={materials} onStart={onStart} />;
+  if (selected === "blank") return <BlankTool diagrams={materials.recall.diagrams} />;
+  return <div className="empty-state compact-empty"><strong>등록된 플러그인이 없습니다.</strong><span>새로운 학습 도구를 연결할 수 있도록 준비 중입니다.</span></div>;
+}
+
+function ImageFixTool({ asset }: { asset: Asset }) {
+  const imageAttachment = (asset.attachments || []).find((item) => item.contentType.startsWith("image/"));
+  const image = imageAttachment?.url || previewForAsset(asset);
+  const [fixed, setFixed] = useState(false);
+  if (!image || (!imageAttachment && !/\.(png|jpe?g|webp)(?:\?|$)/i.test(image))) return <div className="empty-state compact-empty"><strong>이미지 자료에서 사용할 수 있어요.</strong><span>사진 또는 이미지 파일을 선택해 주세요.</span></div>;
+  return <div className="image-fix-tool"><div className={fixed ? "image-fix-preview fixed" : "image-fix-preview"}><img src={image} alt="보정할 원문" /></div><p>{fixed ? "문서의 기울기와 원근을 화면에 맞춰 고정했습니다." : "보정 미리보기로 기울어진 문서를 반듯하게 펼쳐 보세요."}</p><div><button className="primary-button compact" type="button" onClick={() => setFixed(true)}>보정 미리보기</button><button className="secondary-button" type="button" onClick={() => setFixed(false)}>초기화</button></div></div>;
+}
+
+function ProcessedTool({ asset, mode }: { asset: Asset; mode: "ocr" | "question_split" }) {
+  const [processed, setProcessed] = useState<ProcessedContribution | null>(null);
+  useEffect(() => { let active = true; fetch(`/api/processed?id=${encodeURIComponent(asset.id)}`).then((response) => response.json()).then((data: ProcessedContribution) => { if (active) setProcessed(data); }).catch(() => undefined); return () => { active = false; }; }, [asset.id]);
+  if (!processed) return <div className="empty-state compact-empty"><span>처리 결과를 불러오는 중…</span></div>;
+  if (processed.mechanicalStatus === "awaiting_ocr" || processed.mechanicalStatus === "failed") return <div className="empty-state compact-empty"><strong>{processed.mechanicalStatus === "failed" ? "처리에 실패했습니다." : "OCR 연결을 기다리고 있습니다."}</strong><span>{processed.mechanicalError || "처리 결과가 준비되면 여기에 표시됩니다."}</span></div>;
+  if (mode === "ocr") return <pre className="extracted-text">{processed.extractedText || "추출된 텍스트가 없습니다."}</pre>;
+  return <ol className="question-split-list">{processed.questions.length ? processed.questions.map((question) => <li key={question.number}><strong>문제 {question.number}</strong><p>{question.prompt}</p></li>) : <li>번호가 있는 문제를 찾지 못했습니다.</li>}</ol>;
+}
+
+function FastQuizTool({ quizzes }: { quizzes: CustomMaterials["recall"]["quizzes"] }) {
+  const usable = quizzes.filter((quiz) => quiz.question && quiz.options.filter(Boolean).length >= 2);
+  const [index, setIndex] = useState(0); const [answer, setAnswer] = useState<number | null>(null); const [score, setScore] = useState(0); const [complete, setComplete] = useState(false);
+  if (!usable.length) return <div className="empty-state compact-empty"><strong>Fastquiz가 아직 없습니다.</strong><span>두 개 이상의 선택지가 있는 퀴즈를 자료에 추가해 주세요.</span></div>;
+  const quiz = usable[index];
+  const restart = () => { setIndex(0); setAnswer(null); setScore(0); setComplete(false); };
+  if (complete) return <div className="fastquiz-complete"><span>COMPLETE</span><strong>{score} / {usable.length}</strong><p>빠른 선택을 모두 마쳤습니다.</p><button className="primary-button compact" type="button" onClick={restart}>다시 시작</button></div>;
+  const choose = (choice: number) => { if (answer !== null) return; setAnswer(choice); if (choice === quiz.answerIndex) setScore((value) => value + 1); };
+  const next = () => { if (index === usable.length - 1) setComplete(true); else { setIndex((value) => value + 1); setAnswer(null); } };
+  return <div className="fastquiz"><div className="fastquiz-progress"><span style={{ width: `${((index + 1) / usable.length) * 100}%` }} /></div><small>{index + 1} / {usable.length}</small><h3>{quiz.question}</h3><div className="fastquiz-options">{quiz.options.map((option, choice) => option && <button type="button" key={`${option}-${choice}`} className={answer === choice ? (choice === quiz.answerIndex ? "correct" : "wrong") : ""} onClick={() => choose(choice)}>{option}</button>)}</div>{answer !== null && <div className={answer === quiz.answerIndex ? "fastquiz-feedback correct" : "fastquiz-feedback wrong"}><strong>{answer === quiz.answerIndex ? "정답이에요!" : `정답은 ${quiz.options[quiz.answerIndex]}입니다.`}</strong>{quiz.explanation && <p>{quiz.explanation}</p>}<button className="primary-button compact" type="button" onClick={next}>{index === usable.length - 1 ? "결과 보기" : "다음 문제"} →</button></div>}</div>;
+}
+
+function BlankTool({ diagrams }: { diagrams: CustomMaterials["recall"]["diagrams"] }) {
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  if (!diagrams.length) return <div className="empty-state compact-empty"><strong>빈칸 자료가 아직 없습니다.</strong><span>개념 구조 빈칸을 추가하면 여기에서 풀 수 있습니다.</span></div>;
+  return <div className="blank-tool">{diagrams.map((diagram, index) => <article key={`${diagram.title}-${index}`}><strong>{diagram.title}</strong><div className="concept-flow">{diagram.nodes.map((node, nodeIndex) => <span className="concept-node" key={`${node}-${nodeIndex}`}>{nodeIndex === diagram.blankIndex ? <input aria-label={`${diagram.title} 빈칸`} value={answers[index] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [index]: event.target.value }))} placeholder="빈칸" /> : node}</span>)}</div>{answers[index] && <p className={answers[index].trim() === diagram.nodes[diagram.blankIndex] ? "answer-correct" : "answer-wrong"}>{answers[index].trim() === diagram.nodes[diagram.blankIndex] ? "정답입니다." : "다시 생각해 보세요."}</p>}</article>)}</div>;
 }
 
 function LearningToolContent({ tool, asset, materials, onStart }: { tool: "recall" | "memory" | "examples" | "concept" | "description"; asset: Asset; materials: CustomMaterials; onStart: (mode: StudyMode) => void }) {
