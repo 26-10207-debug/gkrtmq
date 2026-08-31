@@ -181,6 +181,7 @@ export function ensureSchema() {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         )
       `),
+      DB.prepare(`CREATE TABLE IF NOT EXISTS api_usage_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, draft_id TEXT, kind TEXT NOT NULL, model TEXT, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, pages INTEGER NOT NULL DEFAULT 0, estimated_usd_micros INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)`),
     ]);
 
     const columnResult = await DB.prepare("PRAGMA table_info(contributions)").all();
@@ -231,6 +232,10 @@ export function ensureSchema() {
     if (!folderItemColumns.has("page_end")) await DB.prepare("ALTER TABLE public_folder_items ADD COLUMN page_end INTEGER").run();
     const draftColumns = new Set(((await DB.prepare("PRAGMA table_info(contribution_drafts)").all()).results as Array<{ name: string }>).map((column) => column.name));
     if (!draftColumns.has("regular_folder_ids_json")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN regular_folder_ids_json TEXT NOT NULL DEFAULT '[]'").run();
+    if (!draftColumns.has("ai_conversation_json")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN ai_conversation_json TEXT NOT NULL DEFAULT '[]'").run();
+    if (!draftColumns.has("source_digest")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN source_digest TEXT NOT NULL DEFAULT ''").run();
+    if (!draftColumns.has("ai_review_locked")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN ai_review_locked INTEGER NOT NULL DEFAULT 0").run();
+    if (!draftColumns.has("ai_applied_count")) await DB.prepare("ALTER TABLE contribution_drafts ADD COLUMN ai_applied_count INTEGER NOT NULL DEFAULT 0").run();
 
     await DB.batch([
       DB.prepare("CREATE INDEX IF NOT EXISTS auth_session_user_idx ON auth_session (user_id)"),
@@ -270,6 +275,8 @@ export function ensureSchema() {
       DB.prepare("CREATE INDEX IF NOT EXISTS public_folder_items_folder_idx ON public_folder_items (folder_id, position)"),
       DB.prepare("CREATE INDEX IF NOT EXISTS contribution_drafts_owner_updated_idx ON contribution_drafts (owner_id, updated_at DESC)"),
       DB.prepare("CREATE UNIQUE INDEX IF NOT EXISTS contribution_drafts_source_unique_idx ON contribution_drafts (source_contribution_id) WHERE source_contribution_id IS NOT NULL"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS api_usage_user_created_idx ON api_usage_ledger (user_id, created_at DESC)"),
+      DB.prepare("CREATE INDEX IF NOT EXISTS api_usage_draft_created_idx ON api_usage_ledger (draft_id, created_at DESC)"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_synonyms (canonical TEXT NOT NULL, alias TEXT NOT NULL, subject TEXT, PRIMARY KEY (canonical, alias))"),
       DB.prepare("CREATE INDEX IF NOT EXISTS search_synonyms_alias_idx ON search_synonyms (alias)"),
       DB.prepare("CREATE TABLE IF NOT EXISTS search_index_state (key TEXT PRIMARY KEY, value TEXT NOT NULL)"),

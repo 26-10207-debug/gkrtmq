@@ -90,7 +90,8 @@ export async function POST(request: Request) {
   const runtime = getRuntimeEnv(); const draftId = String(form.get("draftId") || "").trim();
   const draft = draftId ? await runtime.DB.prepare(`SELECT source_contribution_id AS sourceContributionId, title, source_note AS sourceNote, subject, tags_json AS tagsJson,
     custom_materials_json AS customMaterialsJson, mechanical_options AS mechanicalOptions, attachments_json AS attachmentsJson,
-    extracted_texts_json AS extractedTextsJson, folder_id AS folderId, regular_folder_ids_json AS regularFolderIdsJson, page_start AS pageStart, page_end AS pageEnd
+    extracted_texts_json AS extractedTextsJson, folder_id AS folderId, regular_folder_ids_json AS regularFolderIdsJson, page_start AS pageStart, page_end AS pageEnd,
+    ai_review_locked AS aiReviewLocked
     FROM contribution_drafts WHERE id = ? AND owner_id = ?`).bind(draftId, user.userId).first<Record<string, unknown>>() : null;
   if (draftId && !draft) return Response.json({ error: "공개할 초안을 찾지 못했습니다." }, { status: 404 });
   if (!files.length && draft) {
@@ -109,7 +110,7 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "자료 구체화 내용을 확인해 주세요." }, { status: 400 });
   }
   const licenseConfirmed = form.get("licenseConfirmed") === "true";
-  const publishMode = form.get("publishMode") === "ai_review" ? "ai_review" : "instant";
+  const publishMode = Number(draft?.aiReviewLocked || 0) === 1 || form.get("publishMode") === "ai_review" ? "ai_review" : "instant";
   const draftMechanical = (() => { try { return JSON.parse(String(draft?.mechanicalOptions || "{}")) as Partial<MechanicalOptions>; } catch { return {}; } })();
   const mechanicalOptions: MechanicalOptions = { ocr: form.has("ocr") ? form.get("ocr") === "true" : Boolean(draftMechanical.ocr), textOnly: form.has("textOnly") ? form.get("textOnly") === "true" : Boolean(draftMechanical.textOnly), splitQuestions: form.has("splitQuestions") ? form.get("splitQuestions") === "true" : Boolean(draftMechanical.splitQuestions), createRecall: form.has("createRecall") ? form.get("createRecall") === "true" : Boolean(draftMechanical.createRecall) };
 
@@ -262,15 +263,25 @@ export async function POST(request: Request) {
     }, { status: 202 });
   }
 
-  await runtime.DB.prepare("UPDATE contributions SET status = 'analyzing', ai_model = 'gpt-5.6-terra' WHERE id = ?").bind(id).run();
+  const monthlyUsage = await runtime.DB.prepare("SELECT COALESCE(SUM(estimated_usd_micros),0) AS cost FROM api_usage_ledger WHERE created_at >= strftime('%Y-%m-01T00:00:00Z','now')").first<{ cost: number }>();
+  if (Number(monthlyUsage?.cost || 0) >= 30_000_000) {
+    await runtime.DB.prepare("UPDATE contributions SET status = 'awaiting_ai', error_message = ? WHERE id = ?").bind("이번 달 API 안전 예산에 도달해 다음 달까지 AI 검수를 대기합니다.", id).run();
+    return Response.json({ contribution: { ...baseContribution, status: "awaiting_ai" }, message: "이번 달 API 안전 예산에 도달했습니다. 자료는 비공개 검수 대기열에 보관됩니다." }, { status: 202 });
+  }
+
+  await runtime.DB.prepare("UPDATE contributions SET status = 'analyzing', ai_model = 'gpt-5.4-mini' WHERE id = ?").bind(id).run();
   try {
+    let reviewUsage = { inputTokens: 0, outputTokens: 0 };
     const learningAsset = await structureContribution({
       apiKey: runtime.OPENAI_API_KEY,
       extractedText,
       title,
       sourceNote,
       customMaterialsText: customMaterialsForReview(customMaterials),
+      onUsage: (usage) => { reviewUsage = usage; },
     });
+    const reviewCostMicros = Math.ceil(reviewUsage.inputTokens * .75 + reviewUsage.outputTokens * 4.5);
+    await runtime.DB.prepare("INSERT INTO api_usage_ledger (user_id, draft_id, kind, model, input_tokens, output_tokens, estimated_usd_micros) VALUES (?, ?, 'ai_review', 'gpt-5.4-mini', ?, ?, ?)").bind(user.userId, draftId || null, reviewUsage.inputTokens, reviewUsage.outputTokens, reviewCostMicros).run();
     const passed = learningAsset.coreConcepts.length > 0
       && learningAsset.examples.length > 0
       && learningAsset.recallQuestions.length >= 2

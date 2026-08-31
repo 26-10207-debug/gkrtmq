@@ -27,6 +27,10 @@ export type ConceptGraph3D = {
   camera: { x: number; y: number; z: number; zoom: number };
 };
 
+export type ImageFix = { attachmentIndex: number; rotation: number; brightness: number; contrast: number; grayscale: boolean; corners: Array<{ x: number; y: number }> };
+export type QuestionSet = { title: string; questions: Array<{ prompt: string; answer: string }> };
+export type PluginLink = { provider: "geogebra" | "desmos" | "youtube" | "quizlet"; title: string; description: string; url: string };
+
 export type CustomMaterials = {
   memorization: { title: string; items: string[]; selections: SourceSelection[] };
   recall: {
@@ -34,16 +38,17 @@ export type CustomMaterials = {
     flashCards: Array<{ cue: string; value: string }>;
     quizzes: Array<{ question: string; options: string[]; answerIndex: number; explanation: string }>;
     sequences: Array<{ prompt: string; items: string[] }>;
-    diagrams: Array<{ title: string; nodes: string[]; blankIndex: number; explanation: string }>;
+    diagrams: Array<{ title: string; nodes: string[]; blankIndex: number; blankIndices?: number[]; explanation: string }>;
     conceptModels: ConceptModel[];
     conceptCanvases: ConceptCanvas[];
     conceptGraphs3D: ConceptGraph3D[];
   };
   examples: Array<{ situation: string; misconception: string; contrast: string; explanation: string; takeaway: string }>;
+  tools: { imageFixes: ImageFix[]; questionSets: QuestionSet[]; plugins: PluginLink[] };
 };
 
 export function emptyCustomMaterials(): CustomMaterials {
-  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [], conceptCanvases: [], conceptGraphs3D: [] }, examples: [] };
+  return { memorization: { title: "", items: [], selections: [] }, recall: { shortCards: [], flashCards: [], quizzes: [], sequences: [], diagrams: [], conceptModels: [], conceptCanvases: [], conceptGraphs3D: [] }, examples: [], tools: { imageFixes: [], questionSets: [], plugins: [] } };
 }
 
 function text(value: unknown, limit: number) { return typeof value === "string" ? value.trim().slice(0, limit) : ""; }
@@ -97,7 +102,8 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
   // Earlier 2D diagrams remain readable, but only 3D models are created by the new editor.
   result.recall.diagrams = (Array.isArray(recall.diagrams) ? recall.diagrams : []).slice(0, 8).flatMap((item) => {
     const diagram = item && typeof item === "object" ? item as Record<string, unknown> : {}; const nodes = lines(diagram.nodes, 6, 160); const blankIndex = Number.isInteger(diagram.blankIndex) ? Number(diagram.blankIndex) : -1; const title = text(diagram.title, 120) || "개념 구조 빈칸 채우기"; const explanation = text(diagram.explanation, 600);
-    if (!hasText(diagram)) return []; return [{ title, nodes, blankIndex: Math.max(0, blankIndex), explanation }];
+    const blankIndices = Array.isArray(diagram.blankIndices) ? diagram.blankIndices.map(Number).filter((index) => Number.isInteger(index) && index >= 0 && index < nodes.length).slice(0, nodes.length) : [Math.max(0, blankIndex)];
+    if (!hasText(diagram)) return []; return [{ title, nodes, blankIndex: blankIndices[0] ?? 0, blankIndices, explanation }];
   });
   result.recall.conceptModels = (Array.isArray(recall.conceptModels) ? recall.conceptModels : []).slice(0, 6).flatMap((item) => {
     const model = item && typeof item === "object" ? item as Record<string, unknown> : {}; const shape = model.shape === "cube" || model.shape === "tetrahedron" || model.shape === "square_pyramid" ? model.shape : null;
@@ -138,8 +144,13 @@ export function normalizeCustomMaterials(raw: string): CustomMaterials {
     const example = item && typeof item === "object" ? item as Record<string, unknown> : {}; const situation = text(example.situation, 700); const misconception = text(example.misconception, 700); const contrast = text(example.contrast, 900); const explanation = text(example.explanation, 1000); const takeaway = text(example.takeaway, 300);
     return { situation, misconception, contrast, explanation, takeaway };
   });
+  const tools = value.tools && typeof value.tools === "object" ? value.tools as Record<string, unknown> : {};
+  result.tools.imageFixes = (Array.isArray(tools.imageFixes) ? tools.imageFixes : []).slice(0, 5).map((item) => { const fix = item && typeof item === "object" ? item as Record<string, unknown> : {}; const corners = (Array.isArray(fix.corners) ? fix.corners : []).slice(0, 4).map((point) => { const p = point && typeof point === "object" ? point as Record<string, unknown> : {}; return { x: bounded(p.x, .1, 0, 1), y: bounded(p.y, .1, 0, 1) }; }); return { attachmentIndex: Math.max(0, Math.floor(bounded(fix.attachmentIndex, 0, 0, 4))), rotation: bounded(fix.rotation, 0, -180, 180), brightness: bounded(fix.brightness, 100, 50, 180), contrast: bounded(fix.contrast, 100, 50, 180), grayscale: fix.grayscale === true, corners: corners.length === 4 ? corners : [{x:.05,y:.05},{x:.95,y:.05},{x:.95,y:.95},{x:.05,y:.95}] }; });
+  result.tools.questionSets = (Array.isArray(tools.questionSets) ? tools.questionSets : []).slice(0, 10).map((item) => { const set = item && typeof item === "object" ? item as Record<string, unknown> : {}; return { title: text(set.title, 160), questions: (Array.isArray(set.questions) ? set.questions : []).slice(0, 100).map((raw) => { const q = raw && typeof raw === "object" ? raw as Record<string, unknown> : {}; return { prompt: text(q.prompt, 1200), answer: text(q.answer, 1200) }; }) }; });
+  const allowed = new Set(["geogebra", "desmos", "youtube", "quizlet"]);
+  result.tools.plugins = (Array.isArray(tools.plugins) ? tools.plugins : []).slice(0, 8).flatMap((item) => { const plugin = item && typeof item === "object" ? item as Record<string, unknown> : {}; const provider = text(plugin.provider, 20); const url = text(plugin.url, 700); if (!allowed.has(provider) || !/^https:\/\//i.test(url)) return []; return [{ provider: provider as PluginLink["provider"], title: text(plugin.title, 160), description: text(plugin.description, 500), url }]; });
   return result;
 }
 
-export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.recall.conceptCanvases.length || materials.recall.conceptGraphs3D.length || materials.examples.length); }
+export function hasCustomMaterials(materials: CustomMaterials) { return Boolean(materials.memorization.items.length || materials.memorization.selections.length || materials.recall.shortCards.length || materials.recall.flashCards.length || materials.recall.quizzes.length || materials.recall.sequences.length || materials.recall.diagrams.length || materials.recall.conceptModels.length || materials.recall.conceptCanvases.length || materials.recall.conceptGraphs3D.length || materials.examples.length || materials.tools.imageFixes.length || materials.tools.questionSets.length || materials.tools.plugins.length); }
 export function customMaterialsForReview(materials: CustomMaterials) { return hasCustomMaterials(materials) ? JSON.stringify(materials) : "없음"; }

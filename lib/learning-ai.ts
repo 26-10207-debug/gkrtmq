@@ -26,6 +26,7 @@ export type LearningAsset = {
 
 type OpenAIResponse = {
   output?: Array<{ content?: Array<{ type?: string; text?: string }> }>;
+  usage?: { input_tokens?: number; output_tokens?: number };
 };
 
 const learningAssetSchema = {
@@ -139,6 +140,7 @@ export async function structureContribution(options: {
   title: string;
   sourceNote: string;
   customMaterialsText?: string;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }) {
   const sourceText = options.extractedText.slice(0, 60000);
 
@@ -149,9 +151,10 @@ export async function structureContribution(options: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-5.6-terra",
+      model: "gpt-5.4-mini",
       store: false,
-      reasoning: { effort: "medium" },
+      reasoning: { effort: "low" },
+      max_output_tokens: 1400,
       instructions:
         "당신은 학습 자료 구조화 엔진이다. 원본을 그대로 게시하지 말고, 근거에 충실한 학습 객체로 다시 구성한다. 능동 회상과 다양한 예시를 우선한다. 원본에서 확인할 수 없는 사실은 만들지 말고 qualityFlags에 기록한다. 한국어로 작성한다.",
       input: [
@@ -180,6 +183,7 @@ export async function structureContribution(options: {
   }
 
   const payload = (await response.json()) as OpenAIResponse;
+  options.onUsage?.({ inputTokens: Number(payload.usage?.input_tokens || 0), outputTokens: Number(payload.usage?.output_tokens || 0) });
   return JSON.parse(extractOutputText(payload)) as LearningAsset;
 }
 

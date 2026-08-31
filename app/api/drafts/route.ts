@@ -16,7 +16,8 @@ function draftForClient(row: Record<string, unknown>) {
 const projection = `SELECT id, source_contribution_id AS sourceContributionId, title, source_note AS sourceNote, subject,
   tags_json AS tagsJson, custom_materials_json AS customMaterialsJson, mechanical_options AS mechanicalOptions,
   attachments_json AS attachmentsJson, extracted_texts_json AS extractedTextsJson, folder_id AS folderId, regular_folder_ids_json AS regularFolderIdsJson,
-  page_start AS pageStart, page_end AS pageEnd, publish_mode AS publishMode, created_at AS createdAt, updated_at AS updatedAt`;
+  page_start AS pageStart, page_end AS pageEnd, publish_mode AS publishMode, ai_conversation_json AS aiConversationJson, source_digest AS sourceDigest,
+  ai_review_locked AS aiReviewLocked, ai_applied_count AS aiAppliedCount, created_at AS createdAt, updated_at AS updatedAt`;
 
 export async function GET(request: Request) {
   await ensureSchema(); const user = await getChatGPTUser(); if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
@@ -63,7 +64,10 @@ export async function PATCH(request: Request) {
   const pageStart = body.pageStart === null || body.pageStart === "" ? null : Math.max(1, Number(body.pageStart)); const pageEnd = body.pageEnd === null || body.pageEnd === "" ? null : Math.max(pageStart || 1, Number(body.pageEnd));
   const customMaterials = JSON.stringify(body.customMaterials || {}); if (customMaterials.length > 100_000) return Response.json({ error: "학습 도구 내용이 너무 큽니다." }, { status: 413 });
   const regularFolderIds = Array.isArray(body.regularFolderIds) ? [...new Set(body.regularFolderIds.filter((value): value is string => typeof value === "string"))].slice(0, 20) : [];
-  const { DB } = getRuntimeEnv(); const result = await DB.prepare(`UPDATE contribution_drafts SET title = ?, source_note = ?, subject = ?, tags_json = ?, custom_materials_json = ?, mechanical_options = ?, extracted_texts_json = ?, folder_id = ?, regular_folder_ids_json = ?, page_start = ?, page_end = ?, publish_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?`).bind(String(body.title || "").trim().slice(0,160), String(body.sourceNote || "").slice(0,3000), normalizeSubject(body.subject), JSON.stringify(normalizeTags(body.tags)), customMaterials, JSON.stringify(body.mechanicalOptions || {}), JSON.stringify(Array.isArray(body.extractedTexts) ? body.extractedTexts : []), String(body.folderId || "") || null, JSON.stringify(regularFolderIds), pageStart, pageEnd, body.publishMode === "ai_review" ? "ai_review" : "instant", id, user.userId).run();
+  const { DB } = getRuntimeEnv(); const current = await DB.prepare("SELECT ai_review_locked AS aiReviewLocked FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(id, user.userId).first<{ aiReviewLocked: number }>();
+  if (!current) return Response.json({ error: "저장할 초안을 찾지 못했습니다." }, { status: 404 });
+  const publishMode = current.aiReviewLocked ? "ai_review" : body.publishMode === "ai_review" ? "ai_review" : "instant";
+  const result = await DB.prepare(`UPDATE contribution_drafts SET title = ?, source_note = ?, subject = ?, tags_json = ?, custom_materials_json = ?, mechanical_options = ?, extracted_texts_json = ?, folder_id = ?, regular_folder_ids_json = ?, page_start = ?, page_end = ?, publish_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?`).bind(String(body.title || "").trim().slice(0,160), String(body.sourceNote || "").slice(0,3000), normalizeSubject(body.subject), JSON.stringify(normalizeTags(body.tags)), customMaterials, JSON.stringify(body.mechanicalOptions || {}), JSON.stringify(Array.isArray(body.extractedTexts) ? body.extractedTexts : []), String(body.folderId || "") || null, JSON.stringify(regularFolderIds), pageStart, pageEnd, publishMode, id, user.userId).run();
   if (!result.meta.changes) return Response.json({ error: "저장할 초안을 찾지 못했습니다." }, { status: 404 }); const row = await DB.prepare(`${projection} FROM contribution_drafts WHERE id = ?`).bind(id).first<Record<string, unknown>>(); return Response.json({ draft: draftForClient(row!) });
 }
 
