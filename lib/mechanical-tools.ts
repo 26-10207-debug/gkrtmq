@@ -21,6 +21,7 @@ export type MechanicalResult = {
   text: string;
   questions: MechanicalQuestion[];
   recallCards: RecallCard[];
+  pages?: number;
   error?: string;
 };
 
@@ -32,34 +33,18 @@ function normalizeText(value: string) {
     .trim();
 }
 
-function readOcrText(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const value = payload as Record<string, unknown>;
-  if (typeof value.text === "string") return value.text;
-  if (typeof value.ParsedText === "string") return value.ParsedText;
-  if (typeof value.result === "object" && value.result) return readOcrText(value.result);
-  if (typeof value.data === "object" && value.data) return readOcrText(value.data);
-  if (Array.isArray(value.ParsedResults)) {
-    return value.ParsedResults
-      .map((item) => item && typeof item === "object" && typeof (item as Record<string, unknown>).ParsedText === "string" ? (item as Record<string, string>).ParsedText : "")
-      .filter(Boolean)
-      .join("\n");
-  }
-  return null;
-}
-
 function azureEndpointUrl(endpoint: string) {
   return `${endpoint.replace(/\/+$/, "")}/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30`;
 }
 
-function azureResultText(payload: unknown): string | null {
+function azureResult(payload: unknown): { text: string; pages: number } | null {
   if (!payload || typeof payload !== "object") return null;
   const value = payload as Record<string, unknown>;
   if (String(value.status ?? "").toLowerCase() !== "succeeded") return null;
   const result = value.analyzeResult;
-  return result && typeof result === "object" && typeof (result as Record<string, unknown>).content === "string"
-    ? (result as Record<string, string>).content
-    : null;
+  if (!result || typeof result !== "object" || typeof (result as Record<string, unknown>).content !== "string") return null;
+  const record = result as Record<string, unknown>; const pages = Array.isArray(record.pages) ? record.pages.length : 1;
+  return { text: String(record.content), pages: Math.max(1, pages) };
 }
 
 export function splitQuestions(text: string): MechanicalQuestion[] {
@@ -100,8 +85,8 @@ async function waitForAzureResult(operationUrl: string, apiKey: string) {
     const response = await fetch(operationUrl, { headers: { "Ocp-Apim-Subscription-Key": apiKey } });
     if (!response.ok) throw new Error(`Azure OCR 결과 확인에 실패했습니다. (${response.status})`);
     const payload = await response.json();
-    const text = azureResultText(payload);
-    if (text?.trim()) return text;
+    const result = azureResult(payload);
+    if (result?.text.trim()) return result;
     const status = payload && typeof payload === "object" ? String((payload as Record<string, unknown>).status ?? "") : "";
     if (["failed", "canceled"].includes(status.toLowerCase())) throw new Error("Azure OCR이 문서를 읽지 못했습니다.");
     await new Promise((resolve) => setTimeout(resolve, 500));
@@ -154,12 +139,18 @@ export async function processMechanically(options: {
       };
     }
     try {
-      text = await requestAzureOcr({
+      const ocrResult = await requestAzureOcr({
         endpoint: options.azureEndpoint,
         apiKey: options.azureApiKey,
         bytes: options.bytes,
         contentType: options.contentType,
       });
+      text = ocrResult.text;
+      const normalized = normalizeText(text);
+      if (!normalized) return { status: "failed", text: "", questions: [], recallCards: [], error: "읽을 수 있는 텍스트가 없습니다." };
+      const questions = options.input.splitQuestions ? splitQuestions(normalized) : [];
+      const recallCards = options.input.createRecall ? makeRecallCards(normalized, questions) : [];
+      return { status: "completed", text: normalized, questions, recallCards, pages: ocrResult.pages };
     } catch (error) {
       return {
         status: "failed",

@@ -194,6 +194,7 @@ export async function createPersonalPlan(options: {
   minutes: number;
   level: string;
   method: string;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number }) => void;
 }) {
   const schema = {
     type: "object",
@@ -229,8 +230,10 @@ export async function createPersonalPlan(options: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "gpt-5.6-luna",
+      model: "gpt-5.4-nano",
       store: false,
+      reasoning: { effort: "low" },
+      max_output_tokens: 900,
       instructions:
         "검증된 학습 도구만 조합하는 학습 플래너다. 주어진 총 시간을 넘지 말고, 예시와 능동 회상을 우선한다. 한국어로 작성한다.",
       input: `주제=${options.topic}, 목표=${options.goal}, 시간=${options.minutes}분, 수준=${options.level}, 선호=${options.method}`,
@@ -241,5 +244,7 @@ export async function createPersonalPlan(options: {
   });
 
   if (!response.ok) throw new Error(`AI 플랜 생성 실패 (${response.status})`);
-  return JSON.parse(extractOutputText((await response.json()) as OpenAIResponse));
+  const payload = (await response.json()) as OpenAIResponse;
+  options.onUsage?.({ inputTokens: Number(payload.usage?.input_tokens || 0), outputTokens: Number(payload.usage?.output_tokens || 0) });
+  return JSON.parse(extractOutputText(payload));
 }

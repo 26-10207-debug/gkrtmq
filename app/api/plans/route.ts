@@ -1,4 +1,5 @@
-import { getRuntimeEnv } from "@/db/runtime";
+import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { createPersonalPlan } from "@/lib/learning-ai";
 
 type PlanRequest = {
@@ -28,6 +29,7 @@ function buildRulePlan(payload: Required<Omit<PlanRequest, "useAi">>) {
 }
 
 export async function POST(request: Request) {
+  await ensureSchema();
   const incoming = (await request.json()) as PlanRequest;
   const payload = {
     topic: incoming.topic?.trim() || "돌림힘",
@@ -38,9 +40,14 @@ export async function POST(request: Request) {
   };
 
   const runtime = getRuntimeEnv();
-  if (incoming.useAi && runtime.OPENAI_API_KEY) {
+  const user = incoming.useAi ? await getChatGPTUser() : null;
+  const monthly = incoming.useAi ? await runtime.DB.prepare("SELECT COALESCE(SUM(estimated_usd_micros),0) AS cost FROM api_usage_ledger WHERE created_at >= strftime('%Y-%m-01T00:00:00Z','now')").first<{ cost: number }>() : null;
+  if (incoming.useAi && runtime.OPENAI_API_KEY && user && Number(monthly?.cost || 0) < 30_000_000) {
     try {
-      const plan = await createPersonalPlan({ apiKey: runtime.OPENAI_API_KEY, ...payload });
+      let usage = { inputTokens: 0, outputTokens: 0 };
+      const plan = await createPersonalPlan({ apiKey: runtime.OPENAI_API_KEY, ...payload, onUsage: (value) => { usage = value; } });
+      const micros = Math.ceil(usage.inputTokens * .2 + usage.outputTokens * 1.25);
+      await runtime.DB.prepare("INSERT INTO api_usage_ledger (user_id,kind,model,input_tokens,output_tokens,estimated_usd_micros) VALUES (?,'learning_plan','gpt-5.4-nano',?,?,?)").bind(user.userId, usage.inputTokens, usage.outputTokens, micros).run();
       return Response.json({ plan, engine: "ai" });
     } catch {
       return Response.json({ plan: buildRulePlan(payload), engine: "rules_fallback" });

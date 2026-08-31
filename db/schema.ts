@@ -139,3 +139,7 @@ export const contributionDrafts = sqliteTable("contribution_drafts", {
 export const apiUsageLedger = sqliteTable("api_usage_ledger", {
   id: integer("id").primaryKey({ autoIncrement: true }), userId: text("user_id").notNull(), draftId: text("draft_id"), kind: text("kind").notNull(), model: text("model"), inputTokens: integer("input_tokens").notNull().default(0), outputTokens: integer("output_tokens").notNull().default(0), pages: integer("pages").notNull().default(0), estimatedUsdMicros: integer("estimated_usd_micros").notNull().default(0), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const ocrCache = sqliteTable("ocr_cache", {
+  fileHash: text("file_hash").primaryKey(), extractedText: text("extracted_text").notNull(), pages: integer("pages").notNull().default(1), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});

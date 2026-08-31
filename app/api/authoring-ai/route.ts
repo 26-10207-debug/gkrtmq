@@ -1,6 +1,6 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
-import { emptyCustomMaterials, normalizeCustomMaterials } from "@/lib/custom-materials";
+import { normalizeCustomMaterials } from "@/lib/custom-materials";
 import { extractOutputText } from "@/lib/learning-ai";
 
 type Conversation = Array<{ role: "user" | "assistant"; text: string }>;
@@ -34,16 +34,17 @@ export async function POST(request: Request) {
   const target = ["fastquiz","examples","concept","memorization","blank"].includes(String(body.target)) ? String(body.target) : "fastquiz";
   const highQuality = Boolean(body.highQuality) && Number(month?.cost||0) < MONTHLY_CAP_MICROS*.8 && ["examples","concept"].includes(target);
   const model = highQuality ? "gpt-5.4-mini" : "gpt-5.4-nano"; const maxOutput = highQuality ? 1400 : 900;
-  const texts = parsed<string[]>(draft.extractedTextsJson,[]).join("\n\n").slice(0,24000); if (!texts.trim()) return Response.json({ error:"AI 제작 전에 문서 텍스트를 추출하거나 OCR을 실행해 주세요." },{status:400});
+  const texts = parsed<string[]>(draft.extractedTextsJson,[]).join("\n\n").slice(0,highQuality ? 22000 : 16000); if (!texts.trim()) return Response.json({ error:"AI 제작 전에 문서 텍스트를 추출하거나 OCR을 실행해 주세요." },{status:400});
   const digest = String(draft.sourceDigest||""); const conversations = parsed<Conversation>(draft.aiConversationJson,[]).slice(-6);
-  const response = await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:`Bearer ${OPENAI_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({model,store:false,reasoning:{effort:"low"},max_output_tokens:maxOutput,instructions:"당신은 학습 자료 제작 도우미다. 제공된 원문 텍스트에만 근거하고 사실을 만들지 않는다. 한국어로 답한다. target에 맞는 JSON 초안을 proposalJson 문자열에 넣는다. fastquiz={quizzes:[{question,options,answerIndex,explanation}]}, examples={examples:[{situation,misconception,contrast,explanation,takeaway}]}, memorization={items:[string],shortCards:[{question,answer}],flashCards:[{cue,value}]}, blank={diagrams:[{title,nodes,blankIndices,explanation}]}, concept={graph:{title,nodes:[{id,shape,x,y,z,label}],edges:[{id,from,to,label,directed}],camera:{x,y,z,zoom}}}. sourceDigest는 원문 핵심을 1800자 이하로 압축한다.",input:`대상=${target}\n현재 자료=${String(draft.customMaterialsJson||"{}").slice(0,12000)}\n기존 요약=${digest||"없음"}\n최근 대화=${JSON.stringify(conversations)}\n사용자 요청=${message}\n원문=${digest?"요약을 우선 사용":texts}`,text:{format:{type:"json_schema",name:"authoring_proposal",strict:true,schema}}})});
+  await DB.prepare("UPDATE contribution_drafts SET publish_mode='ai_review', updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(draftId,user.userId).run();
+  const response = await fetch("https://api.openai.com/v1/responses",{method:"POST",headers:{Authorization:`Bearer ${OPENAI_API_KEY}`,"Content-Type":"application/json"},body:JSON.stringify({model,store:false,reasoning:{effort:"low"},max_output_tokens:maxOutput,instructions:"당신은 학습 자료 제작 도우미다. 제공된 원문 텍스트에만 근거하고 사실을 만들지 않는다. 한국어로 답한다. target에 맞는 JSON 초안을 proposalJson 문자열에 넣는다. fastquiz={quizzes:[{question,options,answerIndex,explanation}]}, examples={examples:[{situation,misconception,contrast,explanation,takeaway}]}, memorization={items:[string],shortCards:[{question,answer}],flashCards:[{cue,value}]}, blank={diagrams:[{title,nodes,blankIndices,explanation}]}, concept={graph:{title,nodes:[{id,shape,x,y,z,label}],edges:[{id,from,to,label,directed}],camera:{x,y,z,zoom}}}. sourceDigest는 원문 핵심을 1800자 이하로 압축한다.",input:`대상=${target}\n현재 자료=${String(draft.customMaterialsJson||"{}").slice(0,highQuality ? 9000 : 6000)}\n기존 요약=${digest||"없음"}\n최근 대화=${JSON.stringify(conversations)}\n사용자 요청=${message}\n원문=${digest?"요약을 우선 사용":texts}`,text:{format:{type:"json_schema",name:"authoring_proposal",strict:true,schema}}})});
   if (!response.ok) return Response.json({ error:`AI 제작 요청에 실패했습니다. (${response.status})` },{status:502});
   const payload = await response.json() as { output?:unknown[]; usage?:{input_tokens?:number;output_tokens?:number} }; const answer = JSON.parse(extractOutputText(payload as never)) as {message:string;target:string;proposalJson:string;sourceDigest:string};
   let proposal: unknown; try { proposal=JSON.parse(answer.proposalJson); } catch { return Response.json({error:"AI 변경안을 읽지 못했습니다. 다시 요청해 주세요."},{status:502}); }
   const inputTokens=Number(payload.usage?.input_tokens||0),outputTokens=Number(payload.usage?.output_tokens||0); const micros=Math.ceil(model.endsWith("nano")?inputTokens*.2+outputTokens*1.25:inputTokens*.75+outputTokens*4.5);
   const nextConversation=[...conversations,{role:"user" as const,text:message},{role:"assistant" as const,text:answer.message}].slice(-12);
   await DB.batch([DB.prepare("UPDATE contribution_drafts SET ai_conversation_json = ?, source_digest = CASE WHEN source_digest = '' THEN ? ELSE source_digest END, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?").bind(JSON.stringify(nextConversation),answer.sourceDigest.slice(0,1800),draftId,user.userId),DB.prepare("INSERT INTO api_usage_ledger (user_id,draft_id,kind,model,input_tokens,output_tokens,estimated_usd_micros) VALUES (?,?,?,?,?,?,?)").bind(user.userId,draftId,"authoring_ai",model,inputTokens,outputTokens,micros)]);
-  return Response.json({message:answer.message,target:answer.target,proposal,model,highQuality,usage:{inputTokens,outputTokens,estimatedUsd:micros/1_000_000}});
+  return Response.json({message:answer.message,target:answer.target,proposal,model,highQuality,publishMode:"ai_review",usage:{inputTokens,outputTokens,estimatedUsd:micros/1_000_000}});
 }
 
 export async function PATCH(request: Request) {

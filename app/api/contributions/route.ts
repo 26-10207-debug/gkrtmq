@@ -45,7 +45,8 @@ function contributionForClient(row: Record<string, unknown>) {
     }
     return [{ originalName: String(row.originalName || "파일"), contentType: String(row.contentType || "application/octet-stream"), objectKey: "", size: 0 }];
   })();
-  const { attachmentsJson: _attachmentsJson, ...contribution } = row;
+  const contribution = { ...row };
+  delete contribution.attachmentsJson;
   return { ...contribution, attachments: publicAttachments(attachments) };
 }
 
@@ -59,6 +60,8 @@ function providedTextsFromForm(form: FormData) {
   }
   return [fallback];
 }
+
+async function sha256(bytes: ArrayBuffer) { return [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((value) => value.toString(16).padStart(2, "0")).join(""); }
 
 export async function GET(request: Request) {
   await ensureSchema();
@@ -171,11 +174,22 @@ export async function POST(request: Request) {
     `).bind(id, title, attachments[0].originalName, attachments[0].contentType, attachments[0].objectKey, sourceNote, initialStatus, user.userId, user.email, user.displayName, publishMode, JSON.stringify(effectiveMechanicalOptions), hasMechanicalTools ? "processing" : "none", JSON.stringify(customMaterials), JSON.stringify(attachments), subject, JSON.stringify(tags)),
   ]);
 
-  const mechanicalResults = await Promise.all(files.map(async (file, index) => processMechanically({
-    input: { ...mechanicalOptions, ocr: mechanicalOptions.ocr || (publishMode === "ai_review" && !providedTexts[index]) },
-    bytes: await file.arrayBuffer(), contentType: file.type, filename: file.name, providedText: providedTexts[index],
-    azureEndpoint: runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT, azureApiKey: runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY,
-  })));
+  const processingUsage = await runtime.DB.prepare("SELECT COALESCE(SUM(estimated_usd_micros),0) AS cost FROM api_usage_ledger WHERE created_at >= strftime('%Y-%m-01T00:00:00Z','now')").first<{ cost: number }>();
+  const apiBudgetAvailable = Number(processingUsage?.cost || 0) < 30_000_000;
+  const processed = await Promise.all(files.map(async (file, index) => {
+    const bytes = await file.arrayBuffer(); const wantsOcr = mechanicalOptions.ocr || (publishMode === "ai_review" && !providedTexts[index]); let fileHash = ""; let cachedText = "";
+    if (wantsOcr && !providedTexts[index]) { fileHash = await sha256(bytes); const cached = await runtime.DB.prepare("SELECT extracted_text AS text FROM ocr_cache WHERE file_hash = ?").bind(fileHash).first<{ text: string }>(); cachedText = cached?.text || ""; }
+    const result = await processMechanically({ input: { ...mechanicalOptions, ocr: wantsOcr }, bytes, contentType: file.type, filename: file.name, providedText: providedTexts[index] || cachedText, azureEndpoint: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT : undefined, azureApiKey: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY : undefined });
+    return { result, fileHash, cached: Boolean(cachedText) };
+  }));
+  const mechanicalResults = processed.map((item) => item.result);
+  for (let index = 0; index < processed.length; index += 1) {
+    const item = processed[index]; if (!item.result.pages || item.cached || !item.fileHash) continue; const pages = Math.max(1, item.result.pages);
+    await runtime.DB.batch([
+      runtime.DB.prepare("INSERT INTO ocr_cache (file_hash,extracted_text,pages,updated_at) VALUES (?,?,?,CURRENT_TIMESTAMP) ON CONFLICT(file_hash) DO UPDATE SET extracted_text=excluded.extracted_text,pages=excluded.pages,updated_at=CURRENT_TIMESTAMP").bind(item.fileHash, item.result.text, pages),
+      runtime.DB.prepare("INSERT INTO api_usage_ledger (user_id,draft_id,kind,model,pages,estimated_usd_micros) VALUES (?,?,?,?,?,?)").bind(user.userId, draftId || null, "ocr", "azure-read", pages, pages * 1500),
+    ]);
+  }
   const mechanicalStatus = !hasMechanicalTools ? "none" : mechanicalResults.some((result) => result.status === "failed") ? "failed" : mechanicalResults.some((result) => result.status === "awaiting_ocr") ? "awaiting_ocr" : "completed";
   const extractedText = mechanicalResults.map((result, index) => result.text ? `--- ${files[index].name} ---\n${result.text}` : "").filter(Boolean).join("\n\n").slice(0, 100_000);
   const questions = mechanicalResults.flatMap((result) => result.questions).slice(0, 100).map((question, index) => ({ ...question, number: index + 1 }));
