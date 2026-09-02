@@ -1,13 +1,14 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { publicAttachments, StoredAttachment, storedAttachments } from "@/lib/contribution-attachments";
-import { normalizeSubject, normalizeTags } from "@/lib/search-index";
+import { normalizeTags } from "@/lib/search-index";
 
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 5;
 const ALLOWED = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.presentationml.presentation"]);
 
 function parsed<T>(value: unknown, fallback: T): T { try { return JSON.parse(String(value || "")) as T; } catch { return fallback; } }
+function draftSubject(value: unknown) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 60); }
 function draftForClient(row: Record<string, unknown>) {
   const attachments = parsed<StoredAttachment[]>(row.attachmentsJson, []);
   return { ...row, tags: parsed<string[]>(row.tagsJson, []), regularFolderIds: parsed<string[]>(row.regularFolderIdsJson, []), customMaterials: parsed(row.customMaterialsJson, {}), mechanicalOptions: parsed(row.mechanicalOptions, {}), extractedTexts: parsed<string[]>(row.extractedTextsJson, []), attachments: publicAttachments(attachments).map((item, index) => ({ ...item, url: `/api/draft-files?id=${encodeURIComponent(String(row.id))}&attachment=${index}` })) };
@@ -31,8 +32,22 @@ export async function POST(request: Request) {
   await ensureSchema(); const user = await getChatGPTUser(); if (!user) return Response.json({ error: "초안을 저장하려면 로그인이 필요합니다." }, { status: 401 });
   const runtime = getRuntimeEnv();
   if ((request.headers.get("content-type") || "").includes("application/json")) {
-    const body = await request.json() as { sourceContributionId?: unknown };
-    const sourceId = String(body.sourceContributionId || "").trim(); if (!sourceId) return Response.json({ error: "원본 자료가 필요합니다." }, { status: 400 });
+    const body = await request.json() as Record<string, unknown>;
+    const sourceId = String(body.sourceContributionId || "").trim();
+    if (!sourceId && body.createEmpty === true) {
+      const customMaterials = JSON.stringify(body.customMaterials || {}); if (customMaterials.length > 100_000) return Response.json({ error: "학습 도구 내용이 너무 큽니다." }, { status: 413 });
+      const regularFolderIds = Array.isArray(body.regularFolderIds) ? [...new Set(body.regularFolderIds.filter((value): value is string => typeof value === "string"))].slice(0, 20) : [];
+      const pageStart = body.pageStart === null || body.pageStart === "" ? null : Math.max(1, Number(body.pageStart));
+      const pageEnd = body.pageEnd === null || body.pageEnd === "" ? null : Math.max(pageStart || 1, Number(body.pageEnd));
+      const id = crypto.randomUUID();
+      await runtime.DB.prepare(`INSERT INTO contribution_drafts
+        (id, owner_id, title, source_note, subject, tags_json, custom_materials_json, mechanical_options, extracted_texts_json, folder_id, regular_folder_ids_json, page_start, page_end, publish_mode)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(id, user.userId, String(body.title || "").trim().slice(0, 160), String(body.sourceNote || "").slice(0, 3000), draftSubject(body.subject), JSON.stringify(normalizeTags(body.tags)), customMaterials, JSON.stringify(body.mechanicalOptions || {}), JSON.stringify(Array.isArray(body.extractedTexts) ? body.extractedTexts : []), String(body.folderId || "") || null, JSON.stringify(regularFolderIds), pageStart, pageEnd, body.publishMode === "ai_review" ? "ai_review" : "instant").run();
+      const row = await runtime.DB.prepare(`${projection} FROM contribution_drafts WHERE id = ?`).bind(id).first<Record<string, unknown>>();
+      return Response.json({ draft: draftForClient(row!) }, { status: 201 });
+    }
+    if (!sourceId) return Response.json({ error: "원본 자료가 필요합니다." }, { status: 400 });
     const existing = await runtime.DB.prepare(`${projection} FROM contribution_drafts WHERE source_contribution_id = ? AND owner_id = ?`).bind(sourceId, user.userId).first<Record<string, unknown>>(); if (existing) return Response.json({ draft: draftForClient(existing) });
     const source = await runtime.DB.prepare(`SELECT id, title, source_note AS sourceNote, subject, tags_json AS tagsJson, custom_materials_json AS customMaterialsJson,
       mechanical_options AS mechanicalOptions, attachments_json AS attachmentsJson, extracted_text AS extractedText, publish_mode AS publishMode
@@ -53,7 +68,7 @@ export async function POST(request: Request) {
   const current = parsed<StoredAttachment[]>(owned?.attachmentsJson, []); if (current.filter((item) => item.role !== "corrected").length + files.length > MAX_FILES) return Response.json({ error: `파일은 최대 ${MAX_FILES}개까지 저장할 수 있습니다.` }, { status: 413 });
   if (files.some((file) => file.size > MAX_FILE_BYTES || !ALLOWED.has(file.type))) return Response.json({ error: "지원하지 않는 파일이 있거나 파일당 8MB를 넘었습니다." }, { status: 415 });
   const added = await Promise.all(files.map(async (file, index) => { const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload"; const objectKey = `drafts/${id}/${current.length + index}-${safe}`; await runtime.UPLOADS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { ownerId: user.userId, draftId: id } }); return { originalName: file.name, contentType: file.type, objectKey, size: file.size, role: "source" as const }; }));
-  const attachments = [...current, ...added]; const title = String(form.get("title") || files[0].name.replace(/\.[^.]+$/, "")).trim().slice(0, 160); const subject = normalizeSubject(form.get("subject"));
+  const attachments = [...current, ...added]; const title = String(form.get("title") || files[0].name.replace(/\.[^.]+$/, "")).trim().slice(0, 160); const subject = draftSubject(form.get("subject"));
   if (!existingId) await runtime.DB.prepare(`INSERT INTO contribution_drafts (id, owner_id, title, subject, attachments_json) VALUES (?, ?, ?, ?, ?)`).bind(id, user.userId, title, subject, JSON.stringify(attachments)).run(); else await runtime.DB.prepare("UPDATE contribution_drafts SET attachments_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(JSON.stringify(attachments), id).run();
   const row = await runtime.DB.prepare(`${projection} FROM contribution_drafts WHERE id = ?`).bind(id).first<Record<string, unknown>>(); return Response.json({ draft: draftForClient(row!) }, { status: 201 });
 }
@@ -67,7 +82,7 @@ export async function PATCH(request: Request) {
   const { DB } = getRuntimeEnv(); const current = await DB.prepare("SELECT ai_review_locked AS aiReviewLocked FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(id, user.userId).first<{ aiReviewLocked: number }>();
   if (!current) return Response.json({ error: "저장할 초안을 찾지 못했습니다." }, { status: 404 });
   const publishMode = current.aiReviewLocked ? "ai_review" : body.publishMode === "ai_review" ? "ai_review" : "instant";
-  const result = await DB.prepare(`UPDATE contribution_drafts SET title = ?, source_note = ?, subject = ?, tags_json = ?, custom_materials_json = ?, mechanical_options = ?, extracted_texts_json = ?, folder_id = ?, regular_folder_ids_json = ?, page_start = ?, page_end = ?, publish_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?`).bind(String(body.title || "").trim().slice(0,160), String(body.sourceNote || "").slice(0,3000), normalizeSubject(body.subject), JSON.stringify(normalizeTags(body.tags)), customMaterials, JSON.stringify(body.mechanicalOptions || {}), JSON.stringify(Array.isArray(body.extractedTexts) ? body.extractedTexts : []), String(body.folderId || "") || null, JSON.stringify(regularFolderIds), pageStart, pageEnd, publishMode, id, user.userId).run();
+  const result = await DB.prepare(`UPDATE contribution_drafts SET title = ?, source_note = ?, subject = ?, tags_json = ?, custom_materials_json = ?, mechanical_options = ?, extracted_texts_json = ?, folder_id = ?, regular_folder_ids_json = ?, page_start = ?, page_end = ?, publish_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND owner_id = ?`).bind(String(body.title || "").trim().slice(0,160), String(body.sourceNote || "").slice(0,3000), draftSubject(body.subject), JSON.stringify(normalizeTags(body.tags)), customMaterials, JSON.stringify(body.mechanicalOptions || {}), JSON.stringify(Array.isArray(body.extractedTexts) ? body.extractedTexts : []), String(body.folderId || "") || null, JSON.stringify(regularFolderIds), pageStart, pageEnd, publishMode, id, user.userId).run();
   if (!result.meta.changes) return Response.json({ error: "저장할 초안을 찾지 못했습니다." }, { status: 404 }); const row = await DB.prepare(`${projection} FROM contribution_drafts WHERE id = ?`).bind(id).first<Record<string, unknown>>(); return Response.json({ draft: draftForClient(row!) });
 }
 

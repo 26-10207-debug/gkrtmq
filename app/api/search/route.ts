@@ -1,7 +1,7 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 
-type SearchDocument = { sourceId: string; sourceType: "contribution" | "reference" | "folder"; subject: string; title: string; tags: string; snippet: string; rank: number };
+type SearchDocument = { sourceId: string; sourceType: "contribution" | "reference" | "folder"; subject: string; title: string; tags: string; body?: string; snippet: string; rank: number; exactScore?: number };
 
 function safeMatchTerm(value: string) {
   return value.replace(/["'():*^~{}\[\]\\]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
@@ -9,6 +9,26 @@ function safeMatchTerm(value: string) {
 
 function readTags(value: unknown) {
   try { const parsed = JSON.parse(String(value || "[]")); return Array.isArray(parsed) ? parsed.filter((tag): tag is string => typeof tag === "string") : []; } catch { return []; }
+}
+
+function normalized(value: unknown) { return String(value || "").normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim(); }
+
+function exactnessScore(row: SearchDocument, query: string) {
+  const needle = normalized(query); const title = normalized(row.title); const subject = normalized(row.subject); const tags = normalized(row.tags); const body = normalized(row.body);
+  if (title === needle) return 0;
+  if (title.startsWith(needle)) return 1;
+  if (tags.split(/\s+/).includes(needle)) return 2;
+  if (title.includes(needle)) return 3;
+  if (subject === needle || tags.includes(needle)) return 4;
+  if (body.includes(needle)) return 5;
+  return 6;
+}
+
+function substringSnippet(body: string | undefined, query: string) {
+  const source = String(body || "").replace(/\s+/g, " ").trim(); if (!source) return "";
+  const index = normalized(source).indexOf(normalized(query)); if (index < 0) return source.slice(0, 150);
+  const start = Math.max(0, index - 58); const end = Math.min(source.length, index + query.length + 88);
+  return `${start ? "…" : ""}${source.slice(start, index)}[[${source.slice(index, index + query.length)}]]${source.slice(index + query.length, end)}${end < source.length ? "…" : ""}`;
 }
 
 export async function GET(request: Request) {
@@ -33,17 +53,30 @@ export async function GET(request: Request) {
   }
   const terms = [...new Set([query, ...aliases].map(safeMatchTerm).filter((term) => term.length >= 2))].slice(0, 16);
   const match = terms.map((term) => `"${term.replace(/"/g, "")}"`).join(" OR ");
-  const clauses = ["search_documents MATCH ?"];
-  const bindings: (string | number)[] = [match];
-  if (subject && subject !== "전체") { clauses.push("subject = ?"); bindings.push(subject); }
-  if (type === "사용자 자료") clauses.push("source_type = 'contribution'");
-  if (type === "공개 참고") clauses.push("source_type = 'reference'");
-  if (type === "공개 폴더") clauses.push("source_type = 'folder'");
-  const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags,
-      snippet(search_documents, 5, '[[', ']]', '…', 18) AS snippet,
-      bm25(search_documents, 0, 0, 5, 14, 9, 2) AS rank
-    FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(...bindings).all();
-  const searchRows = searchRowResult.results as SearchDocument[];
+  const addFilters = (clauses: string[], bindings: (string | number)[]) => {
+    if (subject && subject !== "전체") { clauses.push("subject = ?"); bindings.push(subject); }
+    if (type === "사용자 자료") clauses.push("source_type = 'contribution'");
+    if (type === "공개 참고") clauses.push("source_type = 'reference'");
+    if (type === "공개 폴더") clauses.push("source_type = 'folder'");
+  };
+  const combinedRows = new Map<string, SearchDocument>();
+  if (match) {
+    const clauses = ["search_documents MATCH ?"]; const bindings: (string | number)[] = [match]; addFilters(clauses, bindings);
+    const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, body,
+        snippet(search_documents, 5, '[[', ']]', '…', 18) AS snippet,
+        bm25(search_documents, 0, 0, 5, 14, 9, 2) AS rank
+      FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(...bindings).all();
+    for (const row of searchRowResult.results as SearchDocument[]) combinedRows.set(`${row.sourceType}:${row.sourceId}`, { ...row, exactScore: exactnessScore(row, query) });
+  }
+  const partialClauses = ["(instr(lower(title), lower(?)) > 0 OR instr(lower(tags), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)"];
+  const partialBindings: (string | number)[] = [query, query, query]; addFilters(partialClauses, partialBindings);
+  const partialResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, body, 999999 AS rank
+    FROM search_documents WHERE ${partialClauses.join(" AND ")} LIMIT 60`).bind(...partialBindings).all();
+  for (const row of partialResult.results as SearchDocument[]) {
+    const key = `${row.sourceType}:${row.sourceId}`; const existing = combinedRows.get(key); const snippet = substringSnippet(row.body, query); const exactScore = exactnessScore(row, query);
+    combinedRows.set(key, existing ? { ...existing, body: row.body, snippet: snippet || existing.snippet, exactScore: Math.min(existing.exactScore ?? 6, exactScore) } : { ...row, snippet, exactScore });
+  }
+  const searchRows = [...combinedRows.values()];
 
   const contributionIds = searchRows.filter((row) => row.sourceType === "contribution").map((row) => row.sourceId);
   const referenceIds = searchRows.filter((row) => row.sourceType === "reference").map((row) => row.sourceId);
@@ -80,9 +113,9 @@ export async function GET(request: Request) {
   const results = searchRows.map((row) => {
     const source = row.sourceType === "contribution" ? contributionMap.get(row.sourceId) : row.sourceType === "reference" ? referenceMap.get(row.sourceId) : folderMap.get(row.sourceId);
     if (!source) return null;
-    return { ...source, sourceType: row.sourceType, searchSnippet: row.snippet || "", searchRank: Number(row.rank || 0), tags: readTags(source.tagsJson) };
-  }).filter(Boolean) as Array<Record<string, unknown> & { sourceType: string; searchRank: number }>;
-  results.sort((a, b) => sort === "views" ? Number(b.viewCount || 0) - Number(a.viewCount || 0) : sort === "rating" ? 0 : a.searchRank - b.searchRank || Number(b.viewCount || 0) - Number(a.viewCount || 0));
+    return { ...source, sourceType: row.sourceType, searchSnippet: row.snippet || "", searchRank: Number(row.rank || 0), searchExactScore: row.exactScore ?? 6, tags: readTags(source.tagsJson) };
+  }).filter(Boolean) as Array<Record<string, unknown> & { sourceType: string; searchRank: number; searchExactScore: number }>;
+  results.sort((a, b) => sort === "views" ? Number(b.viewCount || 0) - Number(a.viewCount || 0) : sort === "rating" ? 0 : a.searchExactScore - b.searchExactScore || a.searchRank - b.searchRank || Number(b.viewCount || 0) - Number(a.viewCount || 0));
   return Response.json({
     results: results.slice(0, 30),
     related: [...new Set([...aliases, ...results.flatMap((item) => Array.isArray(item.tags) ? item.tags : [])].filter((item) => item && item !== query))].slice(0, 6),
