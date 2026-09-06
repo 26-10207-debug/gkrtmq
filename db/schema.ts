@@ -1,5 +1,15 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+
+export const materialRuntimeSessions = sqliteTable("material_runtime_sessions", {
+  tokenHash: text("token_hash").primaryKey(), sourceId: text("source_id").notNull(),
+  sourceKind: text("source_kind").notNull(), attachmentIndex: integer("attachment_index").notNull(),
+  ownerId: text("owner_id"), expiresAt: integer("expires_at").notNull(),
+}, (table) => [index("runtime_session_expiry").on(table.expiresAt)]);
+export const materialRuntimeState = sqliteTable("material_runtime_state", {
+  userId: text("user_id").notNull(), materialId: text("material_id").notNull(),
+  stateJson: text("state_json").notNull().default("{}"), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [primaryKey({ columns: [table.userId, table.materialId] })]);
 
 export const authUser = sqliteTable("auth_user", {
   id: text("id").primaryKey(),

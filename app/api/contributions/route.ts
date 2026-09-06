@@ -1,3 +1,4 @@
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_COUNT, MAX_TOTAL_UPLOAD_BYTES, contentTypeFor } from "@/lib/upload-types";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { structureContribution } from "@/lib/learning-ai";
@@ -6,20 +7,7 @@ import { customMaterialsForReview, hasImageSelection, normalizeCustomMaterials }
 import { publicAttachments, StoredAttachment } from "@/lib/contribution-attachments";
 import { normalizeSubject, normalizeTags, syncContributionSearchIndex, syncFolderSearchIndex } from "@/lib/search-index";
 
-const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
-const MAX_UPLOAD_COUNT = 5;
-const MAX_TOTAL_UPLOAD_BYTES = 32 * 1024 * 1024;
 const REVIEW_REWARD = 20;
-const ALLOWED_TYPES = new Set([
-  "application/pdf",
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "text/plain",
-  "text/markdown",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-]);
 
 const contributionSelect = `
   SELECT id, title, original_name AS originalName, content_type AS contentType,
@@ -70,6 +58,12 @@ export async function GET(request: Request) {
   if (mine && !user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
 
   const { DB } = getRuntimeEnv();
+  const requestedId = new URL(request.url).searchParams.get("id");
+  if (requestedId) {
+    const row = await DB.prepare(`${contributionSelect}, 0 AS isMine FROM contributions WHERE id = ? AND status IN ('published','published_ai')`).bind(requestedId).first<Record<string, unknown>>();
+    if (row && user) { const owner = await DB.prepare("SELECT 1 FROM contributions WHERE id = ? AND owner_id = ?").bind(requestedId, user.userId).first(); row.isMine = owner ? 1 : 0; }
+    return Response.json({ contributions: row ? [contributionForClient(row)] : [] }, { status: row ? 200 : 404 });
+  }
   const mineProjection = user ? ", CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine" : ", 0 AS isMine";
   const result = mine
     ? await DB.prepare(`${contributionSelect}${mineProjection} FROM contributions WHERE owner_id = ? ORDER BY created_at DESC LIMIT 100`).bind(user!.userId, user!.userId).all()
@@ -135,7 +129,6 @@ export async function POST(request: Request) {
   if (mechanicalOptions.textOnly && hasImageSelection(customMaterials)) return Response.json({ error: "이미지에서 선택한 암기 영역을 공개하려면 원본 공개를 유지해야 합니다." }, { status: 400 });
   if (files.some((file) => file.size > MAX_UPLOAD_BYTES)) return Response.json({ error: "현재는 파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
   if (files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_UPLOAD_BYTES) return Response.json({ error: "한 자료의 전체 파일 용량은 32MB까지입니다." }, { status: 413 });
-  if (files.some((file) => !ALLOWED_TYPES.has(file.type))) return Response.json({ error: "지원하지 않는 파일 형식이 포함되어 있습니다." }, { status: 415 });
 
   const id = crypto.randomUUID();
   const uploadedAttachments: StoredAttachment[] = await Promise.all(files.map(async (file, index) => {
@@ -143,10 +136,10 @@ export async function POST(request: Request) {
     const objectKey = `${publishMode === "instant" ? "published" : "review-queue"}/${id}/${index}-${safeName}`;
     const bytes = await file.arrayBuffer();
     await runtime.UPLOADS.put(objectKey, bytes, {
-      httpMetadata: { contentType: file.type },
+      httpMetadata: { contentType: contentTypeFor(file.name, file.type) },
       customMetadata: { contributionId: id, originalName: file.name, ownerId: user.userId, publishMode, attachmentIndex: String(index) },
     });
-    return { originalName: file.name, contentType: file.type, objectKey, size: file.size, role: "source" };
+    return { originalName: file.name, contentType: contentTypeFor(file.name, file.type), objectKey, size: file.size, role: "source" };
   }));
   const attachments: StoredAttachment[] = [...uploadedAttachments, ...draftAttachments.filter((attachment) => attachment.role === "corrected")];
   customMaterials = { ...customMaterials, tools: { ...customMaterials.tools, imageFixes: customMaterials.tools.imageFixes.map((fix) => { const correctedAttachmentIndex = attachments.findIndex((attachment) => attachment.role === "corrected" && attachment.sourceAttachmentIndex === fix.attachmentIndex); return correctedAttachmentIndex >= 0 ? { ...fix, correctedAttachmentIndex } : fix; }) } };
@@ -179,7 +172,7 @@ export async function POST(request: Request) {
   const processed = await Promise.all(files.map(async (file, index) => {
     const bytes = await file.arrayBuffer(); const wantsOcr = mechanicalOptions.ocr || (publishMode === "ai_review" && !providedTexts[index]); let fileHash = ""; let cachedText = "";
     if (wantsOcr && !providedTexts[index]) { fileHash = await sha256(bytes); const cached = await runtime.DB.prepare("SELECT extracted_text AS text FROM ocr_cache WHERE file_hash = ?").bind(fileHash).first<{ text: string }>(); cachedText = cached?.text || ""; }
-    const result = await processMechanically({ input: { ...mechanicalOptions, ocr: wantsOcr }, bytes, contentType: file.type, filename: file.name, providedText: providedTexts[index] || cachedText, azureEndpoint: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT : undefined, azureApiKey: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY : undefined });
+    const result = await processMechanically({ input: { ...mechanicalOptions, ocr: wantsOcr }, bytes, contentType: contentTypeFor(file.name, file.type), filename: file.name, providedText: providedTexts[index] || cachedText, azureEndpoint: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT : undefined, azureApiKey: apiBudgetAvailable ? runtime.AZURE_DOCUMENT_INTELLIGENCE_KEY : undefined });
     return { result, fileHash, cached: Boolean(cachedText) };
   }));
   const mechanicalResults = processed.map((item) => item.result);

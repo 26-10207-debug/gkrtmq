@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./materials.css";
 
 export const metadata: Metadata = {
   title: "Dumb Can Learn — 능동 회상과 예시 중심 학습",

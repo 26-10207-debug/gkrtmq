@@ -1,6 +1,8 @@
 "use client";
 
 import { unzipSync, strFromU8 } from "fflate";
+import { isTextSource } from "./upload-types";
+import { packageText, unpackWebPackage } from "./web-package";
 
 function normalizeText(value: string) {
   return value.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim().slice(0, 100_000);
@@ -34,7 +36,9 @@ async function readPdf(bytes: Uint8Array) {
 
 export async function extractDocumentText(file: File) {
   const type = file.type;
-  if (type === "text/plain" || type === "text/markdown" || /\.(txt|md)$/i.test(file.name)) return normalizeText(await file.text());
+  if (isTextSource(file.name, type)) return normalizeText(await file.slice(0, 400_000).text());
+  if (/\.zip$/i.test(file.name)) return packageText(unpackWebPackage(new Uint8Array(await file.arrayBuffer()), file.name));
+  if (!/\.(pdf|docx)$/i.test(file.name) && !["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(type)) return "";
   const bytes = new Uint8Array(await file.arrayBuffer());
   if (type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" || /\.docx$/i.test(file.name)) return readDocx(bytes);
   if (type === "application/pdf" || /\.pdf$/i.test(file.name)) return readPdf(bytes);

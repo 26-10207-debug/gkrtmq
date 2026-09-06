@@ -1,3 +1,4 @@
+import { runtimeTables } from "@/lib/runtime-tables";
 import { env } from "cloudflare:workers";
 import { backfillSearchIndex } from "@/lib/search-index";
 
@@ -25,6 +26,7 @@ export function ensureSchema() {
   const { DB } = getRuntimeEnv();
   initialization = (async () => {
     await DB.batch([
+      ...runtimeTables.map((statement) => DB.prepare(statement)),
       DB.prepare(`
         CREATE TABLE IF NOT EXISTS auth_user (
           id TEXT PRIMARY KEY,

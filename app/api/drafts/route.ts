@@ -1,11 +1,10 @@
+import { MAX_UPLOAD_BYTES as MAX_FILE_BYTES, MAX_UPLOAD_COUNT as MAX_FILES, MAX_TOTAL_UPLOAD_BYTES, contentTypeFor } from "@/lib/upload-types";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { publicAttachments, StoredAttachment, storedAttachments } from "@/lib/contribution-attachments";
 import { normalizeTags } from "@/lib/search-index";
 
-const MAX_FILE_BYTES = 8 * 1024 * 1024;
-const MAX_FILES = 5;
-const ALLOWED = new Set(["application/pdf", "image/png", "image/jpeg", "image/webp", "text/plain", "text/markdown", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.presentationml.presentation"]);
+
 
 function parsed<T>(value: unknown, fallback: T): T { try { return JSON.parse(String(value || "")) as T; } catch { return fallback; } }
 function draftSubject(value: unknown) { return String(value || "").replace(/\s+/g, " ").trim().slice(0, 60); }
@@ -65,10 +64,11 @@ export async function POST(request: Request) {
   if (!files.length) return Response.json({ error: "한 개 이상의 파일이 필요합니다." }, { status: 400 });
   const id = existingId || crypto.randomUUID(); const owned = existingId ? await runtime.DB.prepare("SELECT attachments_json AS attachmentsJson FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(id, user.userId).first<{ attachmentsJson: string }>() : null;
   if (existingId && !owned) return Response.json({ error: "수정할 초안을 찾지 못했습니다." }, { status: 404 });
-  const current = parsed<StoredAttachment[]>(owned?.attachmentsJson, []); if (current.filter((item) => item.role !== "corrected").length + files.length > MAX_FILES) return Response.json({ error: `파일은 최대 ${MAX_FILES}개까지 저장할 수 있습니다.` }, { status: 413 });
-  if (files.some((file) => file.size > MAX_FILE_BYTES || !ALLOWED.has(file.type))) return Response.json({ error: "지원하지 않는 파일이 있거나 파일당 8MB를 넘었습니다." }, { status: 415 });
-  const added = await Promise.all(files.map(async (file, index) => { const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload"; const objectKey = `drafts/${id}/${current.length + index}-${safe}`; await runtime.UPLOADS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { ownerId: user.userId, draftId: id } }); return { originalName: file.name, contentType: file.type, objectKey, size: file.size, role: "source" as const }; }));
-  const attachments = [...current, ...added]; const title = String(form.get("title") || files[0].name.replace(/\.[^.]+$/, "")).trim().slice(0, 160); const subject = draftSubject(form.get("subject"));
+  const current = form.get("replace") === "true" ? [] : parsed<StoredAttachment[]>(owned?.attachmentsJson, []); if (current.filter((item) => item.role !== "corrected").length + files.length > MAX_FILES) return Response.json({ error: `파일은 최대 ${MAX_FILES}개까지 저장할 수 있습니다.` }, { status: 413 });
+  if (files.some((file) => file.size > MAX_FILE_BYTES)) return Response.json({ error: "파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
+  if ([...current, ...files].reduce((sum, file) => sum + file.size, 0) > MAX_TOTAL_UPLOAD_BYTES) return Response.json({ error: "한 자료의 전체 용량은 32MB까지입니다." }, { status: 413 });
+  const added = await Promise.all(files.map(async (file, index) => { const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-120) || "upload"; const objectKey = `drafts/${id}/${crypto.randomUUID()}-${current.length + index}-${safe}`; await runtime.UPLOADS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: contentTypeFor(file.name, file.type) }, customMetadata: { ownerId: user.userId, draftId: id } }); return { originalName: file.name, contentType: contentTypeFor(file.name, file.type), objectKey, size: file.size, role: "source" as const }; }));
+  const attachments = [...current.filter((item) => item.role !== "corrected"), ...added, ...current.filter((item) => item.role === "corrected")]; const title = String(form.get("title") || files[0].name.replace(/\.[^.]+$/, "")).trim().slice(0, 160); const subject = draftSubject(form.get("subject"));
   if (!existingId) await runtime.DB.prepare(`INSERT INTO contribution_drafts (id, owner_id, title, subject, attachments_json) VALUES (?, ?, ?, ?, ?)`).bind(id, user.userId, title, subject, JSON.stringify(attachments)).run(); else await runtime.DB.prepare("UPDATE contribution_drafts SET attachments_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").bind(JSON.stringify(attachments), id).run();
   const row = await runtime.DB.prepare(`${projection} FROM contribution_drafts WHERE id = ?`).bind(id).first<Record<string, unknown>>(); return Response.json({ draft: draftForClient(row!) }, { status: 201 });
 }
