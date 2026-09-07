@@ -73,7 +73,7 @@ const binary = await (await request('/api/drafts',{method:'POST',headers:{Cookie
 assert.equal(binary.draft.attachments[0].contentType,'application/octet-stream');
 const tooMany = new FormData(); for(let n=0;n<6;n++)tooMany.append('files',new File(['x'],`${n}.txt`));
 await request('/api/drafts',{method:'POST',headers:{Cookie:owner},body:tooMany},413);
-const tooLarge = new FormData(); tooLarge.append('files',new File([new Uint8Array(8*1024*1024+1)],'large.bin'));
+const tooLarge = new FormData(); tooLarge.append('files',new File([new Uint8Array(20*1024*1024+1)],'large.bin'));
 await request('/api/drafts',{method:'POST',headers:{Cookie:owner},body:tooLarge},413);
 await request('/connect'); await request('/web-material-guide.md'); await request('/examples/learning-game.zip');
 console.log(`PASS: ${checks} local HTTP checks. No production data used.`);

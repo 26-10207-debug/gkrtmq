@@ -584,7 +584,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onMode={startStudy}
         />
       )}
-      {view === "contribute" && <ContributionScreenV2 key={activeDraft?.id || "new-draft"} initialDraft={activeDraft} onBack={showHome} onPublished={(item) => { addPublishedContribution(item); setActiveDraft(null); }} />}
+      {view === "contribute" && <ContributionScreenV2 key={activeDraft?.id || "new-draft"} initialDraft={activeDraft} onBack={showHome} onPublished={(item) => { addPublishedContribution(item); setActiveDraft(null); openAsset(contributionToAsset(item)); }} />}
       {view === "folder-create" && <FolderCreateScreen user={user} onBack={showHome} />}
       {view === "account" && <AccountScreen user={user} onBack={showHome} onPricing={() => setView("pricing")} onUpdated={updatePublishedContribution} onOpenDraft={openDraft} />}
       {view === "pricing" && <PricingScreen onBack={showHome} />}
@@ -1250,6 +1250,9 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
   const [subject, setSubject] = useState(""); const [tags, setTags] = useState("");
   const [phase, setPhase] = useState<"classification" | "workspace">("workspace"); const [pageStart, setPageStart] = useState<number | "">(""); const [pageEnd, setPageEnd] = useState<number | "">("");
   const uploadingRef = useRef(false);
+  const publishingRef = useRef(false);
+  const savedDraftId = useRef("");
+  const draftSaveQueue = useRef<Promise<string | null>>(Promise.resolve(null));
   const [draftId, setDraftId] = useState(""); const [draftState, setDraftState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [aiReviewLocked, setAiReviewLocked] = useState(false);
   const [publishMode, setPublishMode] = useState<"instant" | "ai_review">("instant"); const [ocr, setOcr] = useState(false); const [textOnly, setTextOnly] = useState(false); const [splitQuestionSet, setSplitQuestionSet] = useState(false); const [createRecall, setCreateRecall] = useState(false);
@@ -1262,6 +1265,7 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
   useEffect(() => {
     if (!initialDraft) return;
     let active = true;
+    savedDraftId.current = initialDraft.id;
     setDraftId(initialDraft.id); setTitle(initialDraft.title || ""); setSourceNote(initialDraft.sourceNote || ""); setSubject(initialDraft.subject === "분류 없음" ? "" : initialDraft.subject || ""); setTags((initialDraft.tags || []).join(", "));
     setFolderId(initialDraft.folderId || ""); setRegularFolderIds(initialDraft.regularFolderIds || []); setPageStart(initialDraft.pageStart || ""); setPageEnd(initialDraft.pageEnd || ""); setPublishMode(initialDraft.publishMode || "instant"); setAiReviewLocked(Boolean(initialDraft.aiReviewLocked)); setExtractedTexts(initialDraft.extractedTexts || []);
     const base = emptyCustomMaterials(); const incoming = initialDraft.customMaterials || {};
@@ -1274,24 +1278,34 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
     return () => { active = false; };
   }, [initialDraft]);
   const draftPayload = useMemo(() => ({ id: draftId, title, sourceNote, subject, tags, customMaterials, mechanicalOptions: { ocr, textOnly, splitQuestions: splitQuestionSet, createRecall }, extractedTexts, folderId, regularFolderIds, pageStart, pageEnd, publishMode }), [draftId, title, sourceNote, subject, tags, customMaterials, ocr, textOnly, splitQuestionSet, createRecall, extractedTexts, folderId, regularFolderIds, pageStart, pageEnd, publishMode]);
-  async function saveDraft() {
-    if (uploadingRef.current) return;
+  async function saveDraft(forPublish = false): Promise<string | null> {
+    if (uploadingRef.current || (publishingRef.current && !forPublish)) return null;
+    const snapshot = draftPayload;
     setDraftState("saving");
-    try {
-      const response = await fetch("/api/drafts", { method: draftId ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(draftId ? draftPayload : { ...draftPayload, createEmpty: true }) });
-      const data = await response.json() as { draft?: { id: string } };
-      if (!response.ok || !data.draft) { setDraftState("error"); return; }
-      if (!draftId) setDraftId(data.draft.id);
+    const pending = draftSaveQueue.current.then(async () => {
+      const id = savedDraftId.current || draftId;
+      const response = await fetch("/api/drafts", { method: id ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(id ? { ...snapshot, id } : { ...snapshot, createEmpty: true }) });
+      const data = await response.json() as { draft?: { id: string }; error?: string };
+      if (!response.ok || !data.draft) throw new Error(data.error || "초안을 저장하지 못했습니다. 입력 내용은 화면에 유지됩니다.");
+      savedDraftId.current = data.draft.id;
+      setDraftId(data.draft.id);
       setDraftState("saved");
-    } catch { setDraftState("error"); }
+      return data.draft.id;
+    }).catch((error: unknown) => {
+      setDraftState("error");
+      setResult({ ok: false, message: error instanceof Error ? error.message : "초안 저장 중 연결 문제가 발생했습니다." });
+      return null;
+    });
+    draftSaveQueue.current = pending;
+    return pending;
   }
   useEffect(() => {
     const hasContent = Boolean(title.trim() || sourceNote.trim() || subject.trim() || tags.trim() || hasCustomMaterials(customMaterials));
-    if (!draftId && !hasContent) return;
+    if (submitting || publishingRef.current || (!draftId && !hasContent)) return;
     const timeout = window.setTimeout(() => void saveDraft(), 1500); return () => window.clearTimeout(timeout);
-  }, [draftPayload]);
+  }, [draftPayload, submitting]);
   async function chooseFiles(next: FileList | File[] | null, append = false) {
-    if (uploadingRef.current) return;
+    if (uploadingRef.current || publishingRef.current) return;
     const incoming = Array.from(next || []).map((file) => file.type ? file : new File([file], file.name, { type: contentTypeFor(file.name), lastModified: file.lastModified }));
     if (!incoming.length) return;
     const merged = (append ? [...files, ...incoming] : incoming).filter((file, index, all) => all.findIndex((candidate) => candidate.name === file.name && candidate.size === file.size && candidate.lastModified === file.lastModified) === index);
@@ -1314,6 +1328,7 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
       const response = await fetch("/api/drafts", { method: "POST", body });
       const data = await response.json() as { draft?: { id: string }; error?: string };
       if (!response.ok || !data.draft) throw new Error(data.error || "파일 저장에 실패했습니다. 다시 추가해 주세요.");
+      savedDraftId.current = data.draft.id;
       setFiles(merged); setTitle(candidateTitle); setExtractedTexts(nextTexts); setExtractMessages(readings.map((reading) => reading.message)); setDraftId(data.draft.id);
       const saved = await fetch("/api/drafts", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...draftPayload, id: data.draft.id, title: candidateTitle, extractedTexts: nextTexts }) });
       if (!saved.ok) throw new Error("원본은 저장했지만 설명 저장에 실패했습니다. 임시저장을 다시 눌러 주세요.");
@@ -1334,9 +1349,18 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
     }, []) } }));
   }
   async function submit(event: FormEvent) {
-    event.preventDefault(); if (!files.length && !draftId) return; setSubmitting(true); setResult(null); await saveDraft();
-    const body = new FormData(); if (!draftId) files.forEach((file) => body.append("files", file)); if (draftId) body.set("draftId", draftId); body.set("title", title); body.set("sourceNote", sourceNote); body.set("subject", subject); body.set("tags", tags); body.set("publishMode", publishMode); body.set("ocr", String(ocr)); body.set("textOnly", String(textOnly)); body.set("splitQuestions", String(splitQuestionSet)); body.set("createRecall", String(createRecall)); body.set("customMaterials", JSON.stringify(customMaterials)); body.set("extractedTexts", JSON.stringify(extractedTexts)); body.set("licenseConfirmed", String(licenseConfirmed));
-    try { const response = await fetch("/api/contributions", { method: "POST", body }); const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord & { status?: string } }; setResult({ ok: response.ok, message: data.message || data.error || "처리 결과를 확인할 수 없습니다.", status: data.contribution?.status }); if (response.ok && data.contribution && ["published", "published_ai"].includes(data.contribution.status || "")) onPublished(data.contribution); } catch { setResult({ ok: false, message: "업로드 중 연결 문제가 발생했습니다. 다시 시도해 주세요." }); } finally { setSubmitting(false); }
+    event.preventDefault(); if (publishingRef.current || uploadingRef.current || (!files.length && !draftId)) return;
+    publishingRef.current = true; setSubmitting(true); setResult(null);
+    try {
+      const id = await saveDraft(true);
+      if (!id) return;
+      const body = new FormData(); body.set("draftId", id); body.set("title", title); body.set("sourceNote", sourceNote); body.set("subject", subject); body.set("tags", tags); body.set("publishMode", publishMode); body.set("ocr", String(ocr)); body.set("textOnly", String(textOnly)); body.set("splitQuestions", String(splitQuestionSet)); body.set("createRecall", String(createRecall)); body.set("customMaterials", JSON.stringify(customMaterials)); body.set("extractedTexts", JSON.stringify(extractedTexts)); body.set("licenseConfirmed", String(licenseConfirmed));
+      const response = await fetch("/api/contributions", { method: "POST", body });
+      const data = await response.json() as { error?: string; message?: string; contribution?: ContributionRecord & { status?: string } };
+      setResult({ ok: response.ok, message: data.message || data.error || "처리 결과를 확인할 수 없습니다.", status: data.contribution?.status });
+      if (response.ok && data.contribution && ["published", "published_ai"].includes(data.contribution.status || "")) onPublished(data.contribution);
+    } catch { setResult({ ok: false, message: "업로드 중 연결 문제가 발생했습니다. 내 계정에서 공개 여부를 확인한 후 다시 시도해 주세요." }); }
+    finally { publishingRef.current = false; setSubmitting(false); }
   }
   if (phase === "classification") return <ContributionClassification onBack={() => setPhase("workspace")} subject={subject} setSubject={setSubject} tags={tags} setTags={setTags} folders={folders} folderId={folderId} setFolderId={setFolderId} regularFolderIds={regularFolderIds} setRegularFolderIds={setRegularFolderIds} pageStart={pageStart} setPageStart={setPageStart} pageEnd={pageEnd} setPageEnd={setPageEnd} onContinue={() => setPhase("workspace")} />;
   return <ContributionWorkspace onBack={onBack} files={files} title={title} setTitle={setTitle} sourceNote={sourceNote} setSourceNote={setSourceNote} subject={subject} setSubject={setSubject} tags={tags} setTags={setTags} folders={folders} folderId={folderId} setFolderId={setFolderId} regularFolderIds={regularFolderIds} setRegularFolderIds={setRegularFolderIds} pageStart={pageStart} setPageStart={setPageStart} pageEnd={pageEnd} setPageEnd={setPageEnd} publishMode={publishMode} setPublishMode={setPublishMode} ocr={ocr} setOcr={setOcr} textOnly={textOnly} setTextOnly={setTextOnly} splitQuestionSet={splitQuestionSet} setSplitQuestionSet={setSplitQuestionSet} createRecall={createRecall} setCreateRecall={setCreateRecall} customMaterials={customMaterials} setCustomMaterials={setCustomMaterials} filesLoading={extracting} extractMessages={extractMessages} extractedText={extractedText} extractedTexts={extractedTexts} setExtractedTexts={setExtractedTexts} draftId={draftId} aiReviewLocked={aiReviewLocked} setAiReviewLocked={setAiReviewLocked} chooseFiles={chooseFiles} removeFile={removeFile} tab={workspaceTab} setTab={setWorkspaceTab} licenseConfirmed={licenseConfirmed} setLicenseConfirmed={setLicenseConfirmed} submitting={submitting} result={result} submit={submit} onEditClassification={() => setPhase("classification")} draftState={draftState} saveDraft={() => void saveDraft()} revision={Boolean(initialDraft?.sourceContributionId)} />;
