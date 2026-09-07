@@ -75,24 +75,29 @@ export async function GET(request: Request) {
   // body so existing normalized ranking and phrase matching stay intact.
   const bodyProjection = `CASE WHEN instr(lower(body), lower(?)) > 0
     THEN substr(body, max(1, instr(lower(body), lower(?)) - 80), 400) ELSE body END AS body`;
+  let fulltextStatement: ReturnType<typeof DB.prepare> | undefined;
   if (match) {
     const clauses = ["search_documents MATCH ?"]; const bindings: (string | number)[] = [match]; addFilters(clauses, bindings);
-    const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection},
+    fulltextStatement = DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection},
         snippet(search_documents, 5, '[[', ']]', '…', 18) AS snippet,
         bm25(search_documents, 0, 0, 5, 14, 9, 2) AS rank
-      FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(query, query, ...bindings).all();
-    for (const row of searchRowResult.results as SearchDocument[]) combinedRows.set(`${row.sourceType}:${row.sourceId}`, { ...row, exactScore: exactnessScore(row, query) });
+      FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(query, query, ...bindings);
   }
-  timing.mark("fulltext");
   const partialClauses = ["(instr(lower(title), lower(?)) > 0 OR instr(lower(tags), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)"];
   const partialBindings: (string | number)[] = [query, query, query]; addFilters(partialClauses, partialBindings);
-  const partialResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection}, 999999 AS rank
-    FROM search_documents WHERE ${partialClauses.join(" AND ")} LIMIT 60`).bind(query, query, ...partialBindings).all();
+  const partialStatement = DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection}, 999999 AS rank
+    FROM search_documents WHERE ${partialClauses.join(" AND ")} LIMIT 60`).bind(query, query, ...partialBindings);
+  // One database round trip; merge full-text candidates first to preserve ties.
+  const candidateResults = await DB.batch(fulltextStatement ? [fulltextStatement, partialStatement] : [partialStatement]) as Array<{ results: SearchDocument[] }>;
+  if (fulltextStatement) {
+    for (const row of candidateResults[0].results) combinedRows.set(`${row.sourceType}:${row.sourceId}`, { ...row, exactScore: exactnessScore(row, query) });
+  }
+  const partialResult = candidateResults[candidateResults.length - 1];
   for (const row of partialResult.results as SearchDocument[]) {
     const key = `${row.sourceType}:${row.sourceId}`; const existing = combinedRows.get(key); const snippet = substringSnippet(row.body, query); const exactScore = exactnessScore(row, query);
     combinedRows.set(key, existing ? { ...existing, body: row.body, snippet: snippet || existing.snippet, exactScore: Math.min(existing.exactScore ?? 6, exactScore) } : { ...row, snippet, exactScore });
   }
-  timing.mark("partial");
+  timing.mark("search");
   const searchRows = [...combinedRows.values()];
 
   const contributionIds = searchRows.filter((row) => row.sourceType === "contribution").map((row) => row.sourceId);
@@ -101,9 +106,10 @@ export async function GET(request: Request) {
   const contributionMap = new Map<string, Record<string, unknown>>();
   const referenceMap = new Map<string, Record<string, unknown>>();
   const folderMap = new Map<string, Record<string, unknown>>();
+  const detailQueries: Array<{ statement: ReturnType<typeof DB.prepare>; target: Map<string, Record<string, unknown>>; attachments?: boolean }> = [];
   if (contributionIds.length) {
     const placeholders = contributionIds.map(() => "?").join(",");
-    const rows = await DB.prepare(`SELECT id, title, original_name AS originalName, content_type AS contentType, source_note AS sourceNote,
+    const statement = DB.prepare(`SELECT id, title, original_name AS originalName, content_type AS contentType, source_note AS sourceNote,
       owner_display_name AS ownerDisplayName, view_count AS viewCount, created_at AS createdAt, status, publish_mode AS publishMode,
       mechanical_status AS mechanicalStatus, substr(extracted_text,1,${summary ? 160 : 1200}) AS extractedTextPreview,
       ${contributionToolColumns(summary)}, text_only AS textOnly, mechanical_error AS mechanicalError,
@@ -111,21 +117,29 @@ export async function GET(request: Request) {
       (SELECT f.title FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS bookFolderTitle,
       (SELECT fi.page_start FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageStart,
       (SELECT fi.page_end FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageEnd
-      FROM contributions WHERE status IN ('published', 'published_ai') AND id IN (${placeholders})`).bind(user?.userId || "", ...contributionIds).all();
-    (rows.results as Array<Record<string, unknown>>).forEach((row) => contributionMap.set(String(row.id), { ...row, attachments: (() => { try { return JSON.parse(String(row.attachmentsJson || "[]")); } catch { return []; } })() }));
+      FROM contributions WHERE status IN ('published', 'published_ai') AND id IN (${placeholders})`).bind(user?.userId || "", ...contributionIds);
+    detailQueries.push({ statement, target: contributionMap, attachments: true });
   }
   if (referenceIds.length) {
     const placeholders = referenceIds.map(() => "?").join(",");
-    const rows = await DB.prepare(`SELECT id, title, description, topic, subject, source_name AS sourceName, source_url AS sourceUrl,
-      license_note AS licenseNote, access_mode AS accessMode, tags_json AS tagsJson FROM reference_library WHERE id IN (${placeholders})`).bind(...referenceIds).all();
-    (rows.results as Array<Record<string, unknown>>).forEach((row) => referenceMap.set(String(row.id), row));
+    const statement = DB.prepare(`SELECT id, title, description, topic, subject, source_name AS sourceName, source_url AS sourceUrl,
+      license_note AS licenseNote, access_mode AS accessMode, tags_json AS tagsJson FROM reference_library WHERE id IN (${placeholders})`).bind(...referenceIds);
+    detailQueries.push({ statement, target: referenceMap });
   }
   if (folderIds.length) {
     const placeholders = folderIds.map(() => "?").join(",");
-    const rows = await DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson, f.folder_type AS folderType, f.owner_display_name AS ownerDisplayName,
+    const statement = DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson, f.folder_type AS folderType, f.owner_display_name AS ownerDisplayName,
       COUNT(fi.contribution_id) AS itemCount FROM public_folders f LEFT JOIN public_folder_items fi ON fi.folder_id = f.id
-      WHERE f.visibility_state = 'published' AND f.id IN (${placeholders}) GROUP BY f.id`).bind(...folderIds).all();
-    (rows.results as Array<Record<string, unknown>>).forEach((row) => folderMap.set(String(row.id), row));
+      WHERE f.visibility_state = 'published' AND f.id IN (${placeholders}) GROUP BY f.id`).bind(...folderIds);
+    detailQueries.push({ statement, target: folderMap });
+  }
+  if (detailQueries.length) {
+    const detailResults = await DB.batch(detailQueries.map(({ statement }) => statement)) as Array<{ results: Array<Record<string, unknown>> }>;
+    detailQueries.forEach(({ target, attachments }, index) => {
+      for (const row of detailResults[index].results) {
+        target.set(String(row.id), attachments ? { ...row, attachments: (() => { try { return JSON.parse(String(row.attachmentsJson || "[]")); } catch { return []; } })() } : row);
+      }
+    });
   }
   const results = searchRows.map((row) => {
     const source = row.sourceType === "contribution" ? contributionMap.get(row.sourceId) : row.sourceType === "reference" ? referenceMap.get(row.sourceId) : folderMap.get(row.sourceId);

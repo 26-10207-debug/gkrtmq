@@ -88,7 +88,7 @@ await request('/api/folders?mine=1&summary=1',{},401);
 const strangers = await (await request('/api/folders?mine=1&summary=1',{headers:{Cookie:other}})).json();
 assert.ok(!strangers.folders.some(item=>item.id===folder.folder.id));
 const searchResponse = await request('/api/search?q='+encodeURIComponent(unique)+'&summary=1');
-assert.match(searchResponse.headers.get('Server-Timing'),/partial;dur=/);
+assert.match(searchResponse.headers.get('Server-Timing'),/search;dur=/);
 const summarySearch = await searchResponse.json();
 const summaryItem = summarySearch.results.find(item=>item.id===id); assert.equal(summaryItem.isSummary,1); assert.equal(summaryItem.customMaterialsJson,null);
 console.log(`PASS: ${checks} local HTTP checks. No production data used.`);
