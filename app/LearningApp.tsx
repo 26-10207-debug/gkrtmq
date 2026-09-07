@@ -7,12 +7,13 @@ import { AuthPanel, SignOutButton } from "./AuthPanel";
 import { ConceptCanvas, ConceptCanvasElement, ConceptModel, CustomMaterials, SourceSelection, conceptShapeDefinitions, emptyCustomMaterials, hasCustomMaterials, hasImageSelection } from "@/lib/custom-materials";
 import { extractDocumentText, isImageFile } from "@/lib/document-text";
 import { ConceptMap } from "./ConceptMap";
-import { ConceptGraph3DStudio, emptyConceptGraph3D } from "./ConceptGraph3D";
+import { ConceptGraph3DStudio, emptyConceptGraph3D } from "./LazyConceptGraph3D";
 
 type View = "search" | "detail" | "study" | "contribute" | "account" | "pricing" | "folder" | "folder-create";
 type StudyMode = "info" | "examples" | "recall" | "plan";
 
 type Asset = {
+  isSummary?: boolean;
   id: string;
   title: string;
   description: string;
@@ -49,6 +50,8 @@ type Asset = {
 
 type AccountUser = { displayName: string; email: string; authMethod: "chatgpt" | "app" };
 type ContributionRecord = {
+  isSummary?: number;
+  materialCount?: number;
   id: string;
   title: string;
   originalName: string;
@@ -132,10 +135,11 @@ function contributionToAsset(item: ContributionRecord): Asset {
   const attachments = (item.attachments?.length ? item.attachments : [{ originalName: item.originalName, contentType: item.contentType, size: 0 }]).map((attachment, index) => ({ ...attachment, url: `/api/files?id=${encodeURIComponent(item.id)}&attachment=${index}` }));
   return {
     id: item.id,
+    isSummary: item.isSummary === 1,
     title: item.bookFolderTitle ? `${item.bookFolderTitle} · ${item.pageEnd && item.pageEnd !== item.pageStart ? `pp.${item.pageStart}–${item.pageEnd}` : `p.${item.pageStart || 1}`}` : item.title,
     description: item.bookFolderTitle ? `${item.title} · ${item.sourceNote || item.originalName}` : item.sourceNote || `${item.originalName} · 사용자가 직접 올린 학습 자료`,
     type: "사용자 자료",
-    tags: [...(item.tags || []), item.publishMode === "ai_review" ? "AI 검수 완료" : "즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", materialCount ? `학습 도구 ${materialCount}개` : item.ownerDisplayName || "기여자"].slice(0, 5),
+    tags: [...(item.tags || []), item.publishMode === "ai_review" ? "AI 검수 완료" : "즉시 공개", item.contentType.split("/").pop()?.toUpperCase() || "파일", (item.materialCount ?? materialCount) ? `학습 도구 ${item.materialCount ?? materialCount}개` : item.ownerDisplayName || "기여자"].slice(0, 5),
     rating: 0,
     reviews: 0,
     views: item.viewCount,
@@ -312,6 +316,11 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const [sort, setSort] = useState("relevance");
   const [hasSearched, setHasSearched] = useState(false);
   const [selectedAsset, setSelectedAsset] = useState(assets[0]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+  const detailAbort = useRef<AbortController | null>(null);
+  const detailCache = useRef(new Map<string, { asset: Asset; at: number }>());
+  const linkedMaterialResolved = useRef(false);
   const [selectedFolder, setSelectedFolder] = useState<FolderRecord | null>(null);
   const [studyMode, setStudyMode] = useState<StudyMode>("info");
   const [studyIndex, setStudyIndex] = useState(0);
@@ -352,12 +361,13 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         if (active) { setSelectedAsset(referenceToAsset({ id, title: data.title, description: data.text, topic: "공개 참고", ...data.metadata, accessMode: "external_link", tagsJson: "[]" })); setView("detail"); }
       }
     }
-    void openLinkedMaterial().catch(() => { if (active) { setQuery("자료를 찾을 수 없습니다"); setHasSearched(true); } });
+    void openLinkedMaterial().catch(() => { if (active) { setQuery("자료를 찾을 수 없습니다"); setHasSearched(true); } }).finally(() => { linkedMaterialResolved.current = true; });
     return () => { active = false; };
   }, []);
 
 
   useEffect(() => {
+    if (view !== "search" || (!linkedMaterialResolved.current && new URLSearchParams(window.location.search).has("material"))) return;
     let active = true;
     if (user) fetch("/api/contributions?mine=1")
       .then((response) => response.json())
@@ -372,7 +382,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
       })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [user]);
+  }, [user, view]);
 
   useEffect(() => {
     if (!user) {
@@ -394,27 +404,27 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   useEffect(() => {
     if (!hasSearched || !query) return;
     let active = true;
+    const controller = new AbortController();
     setSearching(true);
-    const params = new URLSearchParams({ q: query, subject, type: filter, sort });
-    fetch(`/api/search?${params}`)
+    const params = new URLSearchParams({ q: query, subject, type: filter, sort, summary: "1" });
+    fetch(`/api/search?${params}`, { signal: controller.signal })
       .then((response) => response.ok ? response.json() : { results: [] })
       .then((data: { results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
         if (!active) return;
         const folderResults = (data.results || []).filter((item) => item.sourceType === "folder") as unknown as FolderRecord[];
-        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item));
+        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => ({ ...(item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item)), searchSnippet: item.searchSnippet }));
         const staticMatches = assets.filter((asset) => {
           const text = `${asset.title} ${asset.description} ${asset.subject} ${asset.tags.join(" ")}`.toLowerCase();
           return text.includes(query.toLowerCase()) && (subject === "전체" || asset.subject === subject) && (filter === "전체" || asset.type === filter);
         });
-        const hydrated = dynamic.map((asset, index) => ({ ...asset, searchSnippet: (data.results || [])[index]?.searchSnippet }));
-        setSearchAssets([...hydrated, ...staticMatches]);
+        setSearchAssets([...dynamic, ...staticMatches]);
         setSearchFolders(folderResults);
         setRelatedTerms(data.related || []);
         if (data.subjects?.length) setSearchSubjects((current) => [...new Set([...current, ...data.subjects!])]);
       })
       .catch(() => { if (active) { setSearchAssets([]); setSearchFolders([]); } })
       .finally(() => { if (active) setSearching(false); });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   }, [filter, hasSearched, query, sort, subject]);
 
   const continuedAsset = useMemo(() => {
@@ -427,10 +437,33 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   const reference = referenceAssets[0];
 
   function openAsset(asset: Asset) {
+    detailAbort.current?.abort();
+    setDetailError(""); setDetailLoading(false);
     setSelectedAsset(asset);
     setView("detail");
     window.scrollTo({ top: 0, behavior: "smooth" });
+    if (asset.isSummary) {
+      const cached = detailCache.current.get(asset.id);
+      if (cached && Date.now() - cached.at < 30_000) { setSelectedAsset(cached.asset); return; }
+      const controller = new AbortController(); detailAbort.current = controller;
+      setDetailLoading(true);
+      fetch(`/api/contributions?id=${encodeURIComponent(asset.id)}`, { signal: controller.signal })
+        .then(async response => {
+          if (!response.ok) throw new Error("자료를 불러오지 못했습니다.");
+          const data = await response.json() as { contributions: ContributionRecord[] };
+          if (!data.contributions?.[0]) throw new Error("자료를 찾을 수 없습니다.");
+          if (controller.signal.aborted) return;
+          const full = { ...contributionToAsset(data.contributions[0]), title: asset.title, searchSnippet: asset.searchSnippet };
+          if (detailCache.current.size >= 20) detailCache.current.delete(detailCache.current.keys().next().value!);
+          detailCache.current.set(asset.id, { asset: full, at: Date.now() }); setSelectedAsset(full);
+        })
+        .catch(() => { if (!controller.signal.aborted) setDetailError("자료를 불러오지 못했습니다. 다시 시도해 주세요."); })
+        .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    }
   }
+
+  useEffect(() => { if (view !== "detail") detailAbort.current?.abort(); }, [view]);
+  useEffect(() => () => { detailAbort.current?.abort(); }, []);
 
   function openDraft(draft: DraftRecord) {
     setActiveDraft(draft);
@@ -455,6 +488,8 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   }
 
   function showHome() {
+    const url = new URL(window.location.href); url.searchParams.delete("material");
+    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
     setView("search");
     setHasSearched(false);
     setQuery("");
@@ -564,7 +599,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
           onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
         />
       )}
-      {view === "detail" && <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />}
+      {view === "detail" && (detailLoading || detailError ? <main className="account-main"><button className="back-button" type="button" onClick={() => setView("search")}>← 검색 결과</button><p role="status">{detailError || "자료를 불러오는 중…"}</p>{detailError && <button className="secondary-button" type="button" onClick={() => openAsset(selectedAsset)}>다시 시도</button>}</main> : <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />)}
       {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={() => setView("search")} onOpen={openAsset} />}
       {view === "study" && (
         <StudyScreen
@@ -884,8 +919,18 @@ function LearningToolContent({ tool, asset, materials, onStart }: { tool: "recal
 
 function AddToFolder({ asset }: { asset: Asset }) {
   const [folders, setFolders] = useState<FolderRecord[]>([]); const [folderId, setFolderId] = useState(""); const [message, setMessage] = useState("");
-  useEffect(() => { fetch("/api/folders?mine=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
-  async function add() { const folder = folders.find((item) => item.id === folderId); if (!folder) return; const ids = [...new Set([...(folder.items || []).map((item) => item.id), asset.id])]; const response = await fetch("/api/folders", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: folder.id, title: folder.title, description: folder.description, subject: folder.subject, tags: folder.tags, contributionIds: ids }) }); setMessage(response.ok ? "폴더에 추가했습니다." : "폴더에 추가하지 못했습니다."); }
+  useEffect(() => { fetch("/api/folders?mine=1&summary=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
+  async function add() {
+    if (!folderId) return;
+    try {
+      const detail = await fetch(`/api/folders?id=${encodeURIComponent(folderId)}`);
+      if (!detail.ok) throw new Error("폴더를 불러오지 못했습니다.");
+      const { folder } = await detail.json() as { folder: FolderRecord };
+      const ids = [...new Set([...(folder.items || []).map(item => item.id), asset.id])];
+      const response = await fetch("/api/folders", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: folder.id, title: folder.title, description: folder.description, subject: folder.subject, tags: folder.tags, contributionIds: ids }) });
+      setMessage(response.ok ? "폴더에 추가했습니다." : "폴더에 추가하지 못했습니다.");
+    } catch { setMessage("폴더를 불러오지 못했습니다. 다시 시도해 주세요."); }
+  }
   const regularFolders = folders.filter((folder) => folder.folderType !== "book");
   if (!regularFolders.length) return <small className="folder-add-note">일반 폴더는 계정 또는 자료 기여 화면에서 만들 수 있어요.</small>;
   return <div className="detail-folder-add"><select aria-label="추가할 공개 폴더" value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">일반 폴더에 추가</option>{regularFolders.map((folder) => <option key={folder.id} value={folder.id}>{folder.title}</option>)}</select><button className="secondary-button" type="button" disabled={!folderId} onClick={() => void add()}>추가</button>{message && <small>{message}</small>}</div>;
@@ -1261,7 +1306,7 @@ function ContributionScreenV2({ onBack, onPublished, initialDraft }: { onBack: (
   const imageSelected = hasImageSelection(customMaterials);
   const extractedText = useMemo(() => extractedTexts.map((text, index) => text ? `--- ${files[index]?.name || `파일 ${index + 1}`} ---\n${text}` : "").filter(Boolean).join("\n\n"), [extractedTexts, files]);
   useEffect(() => { if (imageSelected) setTextOnly(false); }, [imageSelected]);
-  useEffect(() => { fetch("/api/folders?mine=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
+  useEffect(() => { fetch("/api/folders?mine=1&summary=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
   useEffect(() => {
     if (!initialDraft) return;
     let active = true;
@@ -1732,7 +1777,7 @@ function FolderCreateScreen({ user, onBack }: { user: AccountUser | null; onBack
 function FolderManager({ contributions }: { contributions: AccountData["contributions"] }) {
   const [folders, setFolders] = useState<FolderRecord[]>([]); const [title, setTitle] = useState(""); const [subject, setSubject] = useState(""); const [folderType, setFolderType] = useState<"regular" | "book">("regular"); const [selected, setSelected] = useState<string[]>([]); const [message, setMessage] = useState<string | null>(null);
   const publishable = contributions.filter((item) => ["published", "published_ai"].includes(item.status));
-  useEffect(() => { fetch("/api/folders?mine=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
+  useEffect(() => { fetch("/api/folders?mine=1&summary=1").then((response) => response.ok ? response.json() : { folders: [] }).then((data: { folders?: FolderRecord[] }) => setFolders(data.folders || [])).catch(() => undefined); }, []);
   async function create(event: FormEvent) { event.preventDefault(); setMessage(null); const response = await fetch("/api/folders", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, subject, folderType, contributionIds: folderType === "regular" ? selected : [] }) }); const data = await response.json() as { folder?: FolderRecord; error?: string }; if (!response.ok || !data.folder) { setMessage(data.error || "폴더를 만들지 못했습니다."); return; } setFolders((current) => [data.folder!, ...current]); setTitle(""); setSubject(""); setSelected([]); setMessage(folderType === "book" ? "책 폴더를 만들었습니다. 자료 편집에서 페이지를 지정해 추가하세요." : "공개 폴더를 만들었습니다."); }
   async function remove(id: string) { await fetch(`/api/folders?id=${encodeURIComponent(id)}`, { method: "DELETE" }); setFolders((current) => current.filter((folder) => folder.id !== id)); }
   return <section className="folder-manager"><div className="section-heading"><div><p className="eyebrow">내 공개 폴더</p><h2>자료를 주제로 묶어 보여 주세요.</h2></div></div><form onSubmit={create}><label><span>폴더 제목</span><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="예: 물리 수행평가 준비" required /></label><label><span>과목</span><input value={subject} onChange={(event) => setSubject(event.target.value)} placeholder="선택" /></label><label><span>폴더 유형</span><select value={folderType} onChange={(event) => setFolderType(event.target.value as "regular" | "book")}><option value="regular">일반 폴더</option><option value="book">페이지 책 폴더</option></select></label>{folderType === "regular" && publishable.length > 0 && <div className="folder-source-picker">{publishable.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={() => setSelected((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])} />{item.title}</label>)}</div>}<button className="primary-button" type="submit">폴더 만들기</button></form>{message && <p className="record-message">{message}</p>}<div className="folder-manager-list">{folders.map((folder) => <article key={folder.id}><div><span>{folder.folderType === "book" ? "책 폴더" : "일반 폴더"}</span><strong>{folder.title}</strong><small>{folder.visibilityState === "draft" ? "작성 중 · 소유자만 표시" : "공개"} · {folder.subject} · {folder.items?.length || folder.itemCount || 0}개 자료</small></div><button className="secondary-button" type="button" onClick={() => void remove(folder.id)}>삭제</button></article>)}</div></section>;

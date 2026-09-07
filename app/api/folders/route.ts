@@ -31,6 +31,17 @@ export async function GET(request: Request) {
   if (mine && !user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 });
   const { DB } = getRuntimeEnv();
   if (id) { const folder = await folderForClient(DB, id, user?.userId); return folder ? Response.json({ folder }) : Response.json({ error: "폴더를 찾지 못했습니다." }, { status: 404 }); }
+  if (url.searchParams.get("summary") === "1") {
+    const rows = await DB.prepare(`SELECT f.id, f.title, f.description, f.subject, f.tags_json AS tagsJson,
+      f.folder_type AS folderType, f.visibility_state AS visibilityState, f.owner_display_name AS ownerDisplayName,
+      f.created_at AS createdAt, f.updated_at AS updatedAt, CASE WHEN f.owner_id = ? THEN 1 ELSE 0 END AS isMine,
+      (SELECT COUNT(*) FROM public_folder_items fi JOIN contributions c ON c.id = fi.contribution_id
+        WHERE fi.folder_id = f.id AND c.status IN ('published', 'published_ai')) AS itemCount
+      FROM public_folders f WHERE ${mine ? "f.owner_id = ?" : "f.visibility_state = 'published'"}
+      ORDER BY f.updated_at DESC ${mine ? "" : "LIMIT 30"}`)
+      .bind(user?.userId || "", ...(mine ? [user!.userId] : [])).all();
+    return Response.json({ folders: (rows.results as Array<Record<string, unknown>>).map(row => ({ ...row, tags: (() => { try { return JSON.parse(String(row.tagsJson || "[]")); } catch { return []; } })() })) }, { headers: { "Cache-Control": "private, no-store" } });
+  }
   const result = mine ? await DB.prepare("SELECT id FROM public_folders WHERE owner_id = ? ORDER BY updated_at DESC").bind(user!.userId).all() : await DB.prepare("SELECT id FROM public_folders WHERE visibility_state = 'published' ORDER BY updated_at DESC LIMIT 30").all();
   const folders = await Promise.all((result.results as Array<{ id: string }>).map((row) => folderForClient(DB, row.id, user?.userId)));
   return Response.json({ folders: folders.filter(Boolean) });

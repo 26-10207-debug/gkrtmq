@@ -25,6 +25,14 @@ export function ensureSchema() {
 
   const { DB } = getRuntimeEnv();
   initialization = (async () => {
+    // Bump this marker whenever the schema/seed initialization below changes.
+    // New isolates only read a marker instead of repeating DDL and seed writes.
+    try {
+      const ready = await DB.prepare("SELECT value FROM search_index_state WHERE key = 'runtime_schema_v1'").first();
+      if (ready) return;
+    } catch (error) {
+      if (!/no such table/i.test(String(error))) throw error;
+    }
     await DB.batch([
       ...runtimeTables.map((statement) => DB.prepare(statement)),
       DB.prepare(`
@@ -389,7 +397,8 @@ export function ensureSchema() {
       await DB.prepare("INSERT OR REPLACE INTO search_index_state (key, value) VALUES ('fts_backfill_v1', CURRENT_TIMESTAMP)").run();
     }
     await DB.prepare("PRAGMA optimize").run();
-  })();
+    await DB.prepare("INSERT OR REPLACE INTO search_index_state (key, value) VALUES ('runtime_schema_v1', CURRENT_TIMESTAMP)").run();
+  })().catch((error) => { initialization = null; throw error; });
 
   return initialization;
 }

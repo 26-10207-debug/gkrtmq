@@ -1,5 +1,7 @@
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
+import { requestTiming } from "@/lib/request-timing";
+import { contributionToolColumns } from "@/lib/contribution-summary";
 
 type SearchDocument = { sourceId: string; sourceType: "contribution" | "reference" | "folder"; subject: string; title: string; tags: string; body?: string; snippet: string; rank: number; exactScore?: number };
 
@@ -32,25 +34,32 @@ function substringSnippet(body: string | undefined, query: string) {
 }
 
 export async function GET(request: Request) {
+  const timing = requestTiming();
   await ensureSchema();
+  timing.mark("schema");
   const url = new URL(request.url);
   const query = safeMatchTerm(url.searchParams.get("q") || "");
   const subject = (url.searchParams.get("subject") || "전체").trim();
   const type = (url.searchParams.get("type") || "전체").trim();
   const sort = (url.searchParams.get("sort") || "relevance").trim();
+  const summary = url.searchParams.get("summary") === "1";
   const { DB } = getRuntimeEnv();
-  const user = await getChatGPTUser();
-  const subjectRows = await DB.prepare("SELECT DISTINCT subject FROM search_documents WHERE subject <> '' ORDER BY subject LIMIT 40").all();
+  const [user, subjectRows, synonymRows] = await Promise.all([
+    getChatGPTUser(),
+    DB.prepare("SELECT DISTINCT subject FROM search_documents WHERE subject <> '' ORDER BY subject LIMIT 40").all(),
+    DB.prepare("SELECT canonical FROM search_synonyms WHERE lower(alias) = lower(?) LIMIT 6").bind(query).all(),
+  ]);
+  timing.mark("metadata");
   const subjects = subjectRows.results as Array<{ subject: string }>;
-  if (!query) return Response.json({ results: [], related: [], subjects: subjects.map((row) => row.subject) });
+  if (!query) return Response.json({ results: [], related: [], subjects: subjects.map((row) => row.subject) }, { headers: timing.headers() });
 
-  const synonymRows = await DB.prepare("SELECT canonical FROM search_synonyms WHERE lower(alias) = lower(?) LIMIT 6").bind(query).all();
   const canonicals = [...new Set([query, ...(synonymRows.results as Array<{ canonical: string }>).map((row) => row.canonical)])];
   const aliases: string[] = [];
-  for (const canonical of canonicals) {
-    const rows = await DB.prepare("SELECT alias FROM search_synonyms WHERE canonical = ? LIMIT 12").bind(canonical).all();
+  const aliasResults = await DB.batch(canonicals.map(canonical => DB.prepare("SELECT alias FROM search_synonyms WHERE canonical = ? LIMIT 12").bind(canonical))) as Array<{ results: Array<{ alias: string }> }>;
+  for (const rows of aliasResults) {
     aliases.push(...(rows.results as Array<{ alias: string }>).map((row) => row.alias));
   }
+  timing.mark("synonyms");
   const terms = [...new Set([query, ...aliases].map(safeMatchTerm).filter((term) => term.length >= 2))].slice(0, 16);
   const match = terms.map((term) => `"${term.replace(/"/g, "")}"`).join(" OR ");
   const addFilters = (clauses: string[], bindings: (string | number)[]) => {
@@ -60,22 +69,30 @@ export async function GET(request: Request) {
     if (type === "공개 폴더") clauses.push("source_type = 'folder'");
   };
   const combinedRows = new Map<string, SearchDocument>();
+  // Keep the original matching predicates. Return a window around a literal
+  // match rather than transferring up to 180KB for every candidate. If the
+  // literal differs (e.g. whitespace/Unicode normalization), retain the whole
+  // body so existing normalized ranking and phrase matching stay intact.
+  const bodyProjection = `CASE WHEN instr(lower(body), lower(?)) > 0
+    THEN substr(body, max(1, instr(lower(body), lower(?)) - 80), 400) ELSE body END AS body`;
   if (match) {
     const clauses = ["search_documents MATCH ?"]; const bindings: (string | number)[] = [match]; addFilters(clauses, bindings);
-    const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, body,
+    const searchRowResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection},
         snippet(search_documents, 5, '[[', ']]', '…', 18) AS snippet,
         bm25(search_documents, 0, 0, 5, 14, 9, 2) AS rank
-      FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(...bindings).all();
+      FROM search_documents WHERE ${clauses.join(" AND ")} LIMIT 60`).bind(query, query, ...bindings).all();
     for (const row of searchRowResult.results as SearchDocument[]) combinedRows.set(`${row.sourceType}:${row.sourceId}`, { ...row, exactScore: exactnessScore(row, query) });
   }
+  timing.mark("fulltext");
   const partialClauses = ["(instr(lower(title), lower(?)) > 0 OR instr(lower(tags), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)"];
   const partialBindings: (string | number)[] = [query, query, query]; addFilters(partialClauses, partialBindings);
-  const partialResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, body, 999999 AS rank
-    FROM search_documents WHERE ${partialClauses.join(" AND ")} LIMIT 60`).bind(...partialBindings).all();
+  const partialResult = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, subject, title, tags, ${bodyProjection}, 999999 AS rank
+    FROM search_documents WHERE ${partialClauses.join(" AND ")} LIMIT 60`).bind(query, query, ...partialBindings).all();
   for (const row of partialResult.results as SearchDocument[]) {
     const key = `${row.sourceType}:${row.sourceId}`; const existing = combinedRows.get(key); const snippet = substringSnippet(row.body, query); const exactScore = exactnessScore(row, query);
     combinedRows.set(key, existing ? { ...existing, body: row.body, snippet: snippet || existing.snippet, exactScore: Math.min(existing.exactScore ?? 6, exactScore) } : { ...row, snippet, exactScore });
   }
+  timing.mark("partial");
   const searchRows = [...combinedRows.values()];
 
   const contributionIds = searchRows.filter((row) => row.sourceType === "contribution").map((row) => row.sourceId);
@@ -88,13 +105,13 @@ export async function GET(request: Request) {
     const placeholders = contributionIds.map(() => "?").join(",");
     const rows = await DB.prepare(`SELECT id, title, original_name AS originalName, content_type AS contentType, source_note AS sourceNote,
       owner_display_name AS ownerDisplayName, view_count AS viewCount, created_at AS createdAt, status, publish_mode AS publishMode,
-      mechanical_status AS mechanicalStatus, substr(extracted_text,1,1200) AS extractedTextPreview, questions_json AS questionsJson,
-      recall_json AS recallJson, text_only AS textOnly, mechanical_error AS mechanicalError, custom_materials_json AS customMaterialsJson,
+      mechanical_status AS mechanicalStatus, substr(extracted_text,1,${summary ? 160 : 1200}) AS extractedTextPreview,
+      ${contributionToolColumns(summary)}, text_only AS textOnly, mechanical_error AS mechanicalError,
       attachments_json AS attachmentsJson, subject, tags_json AS tagsJson, CASE WHEN owner_id = ? THEN 1 ELSE 0 END AS isMine,
       (SELECT f.title FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS bookFolderTitle,
       (SELECT fi.page_start FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageStart,
       (SELECT fi.page_end FROM public_folder_items fi JOIN public_folders f ON f.id = fi.folder_id WHERE fi.contribution_id = contributions.id AND f.folder_type = 'book' LIMIT 1) AS pageEnd
-      FROM contributions WHERE id IN (${placeholders})`).bind(user?.userId || "", ...contributionIds).all();
+      FROM contributions WHERE status IN ('published', 'published_ai') AND id IN (${placeholders})`).bind(user?.userId || "", ...contributionIds).all();
     (rows.results as Array<Record<string, unknown>>).forEach((row) => contributionMap.set(String(row.id), { ...row, attachments: (() => { try { return JSON.parse(String(row.attachmentsJson || "[]")); } catch { return []; } })() }));
   }
   if (referenceIds.length) {
@@ -116,9 +133,10 @@ export async function GET(request: Request) {
     return { ...source, sourceType: row.sourceType, searchSnippet: row.snippet || "", searchRank: Number(row.rank || 0), searchExactScore: row.exactScore ?? 6, tags: readTags(source.tagsJson) };
   }).filter(Boolean) as Array<Record<string, unknown> & { sourceType: string; searchRank: number; searchExactScore: number }>;
   results.sort((a, b) => sort === "views" ? Number(b.viewCount || 0) - Number(a.viewCount || 0) : sort === "rating" ? 0 : a.searchExactScore - b.searchExactScore || a.searchRank - b.searchRank || Number(b.viewCount || 0) - Number(a.viewCount || 0));
+  timing.mark("results");
   return Response.json({
     results: results.slice(0, 30),
     related: [...new Set([...aliases, ...results.flatMap((item) => Array.isArray(item.tags) ? item.tags : [])].filter((item) => item && item !== query))].slice(0, 6),
     subjects: subjects.map((row) => row.subject),
-  });
+  }, { headers: timing.headers() });
 }
