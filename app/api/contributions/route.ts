@@ -127,7 +127,7 @@ export async function POST(request: Request) {
   if (files.length > MAX_UPLOAD_COUNT) return Response.json({ error: `한 자료에는 최대 ${MAX_UPLOAD_COUNT}개 파일까지 올릴 수 있습니다.` }, { status: 413 });
   if (!licenseConfirmed) return Response.json({ error: "기여 권한과 선택한 공개 방식에 동의해야 합니다." }, { status: 400 });
   if (mechanicalOptions.textOnly && hasImageSelection(customMaterials)) return Response.json({ error: "이미지에서 선택한 암기 영역을 공개하려면 원본 공개를 유지해야 합니다." }, { status: 400 });
-  if (files.some((file) => file.size > MAX_UPLOAD_BYTES)) return Response.json({ error: "현재는 파일당 8MB까지 업로드할 수 있습니다." }, { status: 413 });
+  if (files.some((file) => file.size > MAX_UPLOAD_BYTES)) return Response.json({ error: "현재는 파일당 20MB까지 업로드할 수 있습니다." }, { status: 413 });
   if (files.reduce((total, file) => total + file.size, 0) > MAX_TOTAL_UPLOAD_BYTES) return Response.json({ error: "한 자료의 전체 파일 용량은 32MB까지입니다." }, { status: 413 });
 
   const id = crypto.randomUUID();

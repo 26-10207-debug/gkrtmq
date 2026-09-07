@@ -1,0 +1,16 @@
+.exam-import { max-width: 820px; margin: 0 auto; padding: 28px 20px 64px; color: #172a40; }
+.exam-import h1 { font-size: clamp(26px, 5vw, 36px); margin: 20px 0 12px; }
+.exam-import h2 { font-size: 21px; }
+.exam-import p { line-height: 1.7; overflow-wrap: anywhere; }
+.exam-import section { padding: 22px; background: #fff; border: 1px solid #dce4ec; border-radius: 16px; margin-top: 20px; }
+.exam-import a { color: #176f87; text-decoration: underline; overflow-wrap: anywhere; }
+.exam-import .import-picker { display: grid; gap: 14px; background: #edf5f7; padding: 22px; border-radius: 16px; margin-top: 24px; }
+.exam-import input { width: 100%; max-width: 100%; }
+.exam-import button { color: #fff; background: #176f87; border: 0; padding: 13px 18px; border-radius: 9px; margin: 12px 10px 0 0; cursor: pointer; }
+.exam-import button:disabled { opacity: .5; cursor: wait; }
+.exam-import li { line-height: 1.65; margin: 10px 0; overflow-wrap: anywhere; }
+.exam-import progress { width: 100%; accent-color: #176f87; }
+.exam-import [role=alert] { color: #b32b23; }
+.exam-import summary { cursor: pointer; padding: 10px 0; }
+.exam-import pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+@media(max-width: 500px) { .exam-import { padding: 20px 12px 40px; } .exam-import section { padding: 16px; } .exam-import ul { padding-left: 20px; } }

@@ -21,7 +21,7 @@ export default function ConnectionGuide() {
     <section><h2>가져올 수 있는 내용</h2><ul><li>자료·참고 자료·공개 폴더 검색</li><li>자료 본문, 학습 도구 내용, 출처와 첨부 파일 목록</li><li>코드와 텍스트 원문, ZIP 안의 파일 목록과 개별 소스</li></ul><p>이미지·영상 등은 원본 링크로 제공합니다. 자료를 GPT에 연결해도 업로드한 프로그램이 자동으로 실행되지는 않습니다.</p></section>
     <section id="web-materials"><h2>GPT로 실행 자료 만들기</h2><p>아래 요청을 GPT에 전달하고, 완성된 HTML 또는 ZIP을 ‘자료 기여’에서 업로드하세요.</p>
       <blockquote>덤캔런에 올릴 학습 자료를 만들어 줘. 브라우저에서 실행되는 HTML·CSS·JavaScript로 만들고, 휴대폰에서도 터치로 사용할 수 있게 해 줘. 단일 HTML 또는 index.html과 필요한 파일을 포함한 ZIP으로 제공해 줘. 서버와 API 키 없이 동작하도록 하고, 설명과 출처를 README.md에 함께 적어 줘.</blockquote>
-      <p>파일당 8MB, 최대 5개, 합계 32MB까지 보관합니다. 웹 ZIP 실행은 압축 해제 후 16MB·256개 항목까지 지원합니다. 설치형 프로그램과 개발용 소스는 보관할 수 있으며, 웹 실행에는 브라우저용 빌드가 필요합니다.</p>
+      <p>파일당 20MB, 최대 5개, 합계 32MB까지 보관합니다. 웹 ZIP 실행은 압축 해제 후 16MB·256개 항목까지 지원합니다. 설치형 프로그램과 개발용 소스는 보관할 수 있으며, 웹 실행에는 브라우저용 빌드가 필요합니다.</p>
       <div className="connection-downloads"><a className="primary-button" href="/examples/learning-game.zip" download>학습 게임 예제 ZIP</a><a className="secondary-button" href="/web-material-guide.md" target="_blank" rel="noreferrer">제작 규격 보기</a></div>
     </section>
     <details><summary>개발용 공개 API</summary><p>인증 없이 공개 자료를 읽는 API입니다.</p><code>GET /api/public/search?q=검색어</code><code>GET /api/public/materials/자료ID</code><p>MCP 도구: search, fetch, read_file</p></details>

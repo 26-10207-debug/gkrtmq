@@ -1,5 +1,5 @@
 /** Storage accepts any file. Preview and execution are explicit capabilities. */
-export const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 export const MAX_UPLOAD_COUNT = 5;
 export const MAX_TOTAL_UPLOAD_BYTES = 32 * 1024 * 1024;
 
