@@ -8,9 +8,35 @@ export function MaterialPlayer(props: PlayerProps) {
 }
 function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProps) {
   const [url, setUrl] = useState(""); const [busy, setBusy] = useState(false); const [message, setMessage] = useState("");
+  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenBusy, setFullscreenBusy] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null); const container = useRef<HTMLDivElement>(null); const previewState = useRef<unknown>(null);
   const abort = useRef<AbortController | null>(null);
   useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => {
+    const syncFullscreen = () => setFullscreen(Boolean(document.fullscreenElement && container.current?.contains(document.fullscreenElement)));
+    syncFullscreen();
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
+  async function toggleFullscreen() {
+    const player = container.current;
+    if (!player || fullscreenBusy) return;
+    setFullscreenBusy(true);
+    try {
+      if (document.fullscreenElement && player.contains(document.fullscreenElement)) {
+        await document.exitFullscreen();
+      } else if (player.requestFullscreen) {
+        await player.requestFullscreen();
+      } else {
+        setMessage("이 브라우저에서는 전체 화면을 지원하지 않습니다.");
+      }
+    } catch {
+      setMessage(document.fullscreenElement ? "전체 화면을 해제하지 못했습니다. 다시 누르거나 Esc 키를 눌러 주세요." : "전체 화면으로 전환하지 못했습니다. 다시 시도해 주세요.");
+    } finally {
+      setFullscreenBusy(false);
+    }
+  }
   useEffect(() => {
     async function receive(event: MessageEvent) {
       if (event.source !== frame.current?.contentWindow || event.origin !== "null" || event.data?.channel !== "dcl-runtime-v1") return;
@@ -44,10 +70,16 @@ function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProp
       if (!controller.signal.aborted) setUrl(data.url);
     } catch (error) { if (!controller.signal.aborted) { setMessage(error instanceof Error ? error.message : "실행 오류"); setBusy(false); } }
   }
-  function stop() { abort.current?.abort(); setUrl(""); setBusy(false); }
+  function stop() {
+    abort.current?.abort(); setUrl(""); setBusy(false);
+    if (document.fullscreenElement && container.current?.contains(document.fullscreenElement)) {
+      void document.exitFullscreen().catch(() => setMessage("전체 화면 해제 버튼을 누르거나 Esc 키를 눌러 주세요."));
+    }
+  }
   return <div ref={container} className="material-player" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
     <div className="material-player-toolbar"><strong>웹 자료</strong><div>
-      {!url ? <button type="button" className="primary-button compact" disabled={!sourceId || busy} onClick={start}>{busy ? "준비 중…" : "▶ 실행"}</button> : <><button type="button" className="secondary-button" onClick={stop}>중지</button><button type="button" className="secondary-button" onClick={start}>다시 시작</button><button type="button" className="secondary-button" onClick={() => { if (container.current?.requestFullscreen) void container.current.requestFullscreen().catch(() => setMessage("이 브라우저에서는 전체 화면을 지원하지 않습니다.")); else setMessage("이 브라우저에서는 전체 화면을 지원하지 않습니다."); }}>전체 화면</button></>}
+      {!url ? <button type="button" className="primary-button compact" disabled={!sourceId || busy} onClick={start}>{busy ? "준비 중…" : "▶ 실행"}</button> : <><button type="button" className="secondary-button" onClick={stop}>중지</button><button type="button" className="secondary-button" onClick={start}>다시 시작</button></>}
+      {(url || fullscreen) && <button type="button" className="secondary-button" aria-pressed={fullscreen} disabled={fullscreenBusy} onClick={toggleFullscreen}>{fullscreen ? "전체 화면 해제" : "전체 화면"}</button>}
     </div></div>
     {url ? <iframe ref={frame} src={url} title="업로드한 웹 자료 실행" sandbox="allow-scripts" allow="fullscreen" allowFullScreen referrerPolicy="no-referrer" /> : <div className="material-player-empty"><span aria-hidden="true">▷</span><strong>{sourceId ? "준비된 웹 자료를 실행해 보세요" : "원본을 저장하면 실행할 수 있어요"}</strong><p>HTML 파일이나 index.html이 포함된 웹용 ZIP을 열 수 있습니다.</p><a href="/connect#web-materials" target="_blank" rel="noreferrer">제작 방법과 예제</a></div>}
     {busy && url && <p role="status">자료를 불러오는 중입니다…</p>}

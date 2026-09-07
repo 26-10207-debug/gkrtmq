@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useSyncExternalStore } from "react";
-import Link from "next/link";
 
 const subscribe = () => () => {};
 
@@ -10,7 +9,7 @@ export default function ConnectionGuide() {
   const [copied, setCopied] = useState(false);
   async function copy() { try { await navigator.clipboard.writeText(`${origin}/api/mcp`); setCopied(true); } catch { setCopied(false); } }
   return <main className="connection-guide">
-    <Link className="back-button" href="/">← Dumb Can Learn</Link>
+    <a className="back-button" href="/">← 덤캔런으로 돌아가기</a>
     <h1>내 GPT에서 자료 가져오기</h1>
     <p>ChatGPT·Codex에 덤캔런을 연결하면 공개 학습 자료를 검색하고 원문과 코드를 읽을 수 있습니다.</p>
     <section><h2>MCP 연결</h2><label htmlFor="mcp-url">연결 URL</label><div className="connection-url"><input id="mcp-url" readOnly value={origin ? `${origin}/api/mcp` : ""} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="primary-button" onClick={copy}>{copied ? "복사됨" : "복사"}</button></div>
