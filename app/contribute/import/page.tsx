@@ -83,7 +83,7 @@ export default function ImportPage() {
       setMessage(`${user.displayName} 계정으로 기여 중`);
       for (const pack of packages) {
         const { manifest, contents } = await unpack(pack.file, true);
-        for (const m of manifest.materials) {
+        async function publishMaterial(m: Material) {
           if (stop.current) throw new Error("일시 정지했습니다. 다시 시작하면 등록된 자료는 건너뜁니다.");
           setMessage(`${completed.length + 1}/${all.length} · ${m.title}`);
           const uploads: File[] = [];
@@ -124,6 +124,26 @@ export default function ImportPage() {
           completed.push({ key: m.key, title: m.title, id: item.id, folderId: folder.id, folder: m.folder, files: m.files.length, reused });
           setResults([...completed]);
         }
+        // Each folder is handled in order by one worker, preventing duplicate
+        // folders and preserving the exam sequence while other folders upload.
+        const grouped = new Map<string, Material[]>();
+        for (const material of manifest.materials) grouped.set(material.folder, [...(grouped.get(material.folder) || []), material]);
+        const queue = [...grouped.values()];
+        let next = 0;
+        let failure: unknown = null;
+        async function worker() {
+          while (!failure && next < queue.length) {
+            const group = queue[next++];
+            try {
+              for (const material of group) {
+                if (failure) return;
+                await publishMaterial(material);
+              }
+            } catch (e) { failure = e; }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(4, queue.length) }, () => worker()));
+        if (failure) throw failure;
       }
       setMessage("공개 폴더와 첨부 파일 수를 확인하고 있습니다.");
       for (const id of new Set(completed.map(r => r.folderId))) {
