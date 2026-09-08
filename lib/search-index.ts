@@ -1,3 +1,4 @@
+import { syncSearchV2, syncContainingFolders } from "./search-index-v2";
 const DEFAULT_SUBJECT = "분류 없음";
 
 export const suggestedSubjects = ["물리학", "영어", "수학", "철학", "기타"];
@@ -41,6 +42,8 @@ type ContributionRow = {
 };
 
 export async function syncContributionSearchIndex(DB: D1Database, id: string) {
+  await syncSearchV2(DB, "contribution", id);
+  await syncContainingFolders(DB, id);
   const row = await DB.prepare(`SELECT id, title, subject, tags_json AS tagsJson, source_note AS sourceNote,
     extracted_text AS extractedText, learning_json AS learningJson, custom_materials_json AS customMaterialsJson,
     questions_json AS questionsJson, recall_json AS recallJson, status FROM contributions WHERE id = ?`).bind(id).first<ContributionRow>();
@@ -53,6 +56,7 @@ export async function syncContributionSearchIndex(DB: D1Database, id: string) {
 }
 
 export async function syncReferenceSearchIndex(DB: D1Database, id: string) {
+  await syncSearchV2(DB, "reference", id);
   const row = await DB.prepare(`SELECT id, title, subject, tags_json AS tagsJson, description FROM reference_library WHERE id = ?`).bind(id).first<{ id: string; title: string; subject: string; tagsJson: string; description: string }>();
   await DB.prepare("DELETE FROM search_documents WHERE source_id = ? AND source_type = 'reference'").bind(id).run();
   if (!row) return;
@@ -61,6 +65,7 @@ export async function syncReferenceSearchIndex(DB: D1Database, id: string) {
 }
 
 export async function syncFolderSearchIndex(DB: D1Database, id: string) {
+  await syncSearchV2(DB, "folder", id);
   const row = await DB.prepare("SELECT id, title, description, subject, tags_json AS tagsJson, visibility_state AS visibilityState FROM public_folders WHERE id = ?").bind(id).first<{ id: string; title: string; description: string; subject: string; tagsJson: string; visibilityState: string }>();
   await DB.prepare("DELETE FROM search_documents WHERE source_id = ? AND source_type = 'folder'").bind(id).run();
   if (!row || row.visibilityState !== "published") return;

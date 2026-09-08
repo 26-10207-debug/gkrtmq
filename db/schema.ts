@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { check, unique, index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const materialRuntimeSessions = sqliteTable("material_runtime_sessions", {
   tokenHash: text("token_hash").primaryKey(), sourceId: text("source_id").notNull(),
@@ -153,3 +153,18 @@ export const apiUsageLedger = sqliteTable("api_usage_ledger", {
 export const ocrCache = sqliteTable("ocr_cache", {
   fileHash: text("file_hash").primaryKey(), extractedText: text("extracted_text").notNull(), pages: integer("pages").notNull().default(1), createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const searchV2Documents = sqliteTable("search_v2_documents", {
+  id: text("id").primaryKey(), sourceId: text("source_id").notNull(), sourceType: text("source_type").notNull(), title: text("title").notNull(), normalizedTitle: text("normalized_title").notNull(), compactTitle: text("compact_title").notNull(), titleInitials: text("title_initials").notNull(), description: text("description").notNull().default(""), subject: text("subject").notNull().default("분류 없음"), tagsJson: text("tags_json").notNull().default("[]"), year: text("year"), grade: text("grade"), school: text("school"), exam: text("exam"), fileType: text("file_type").notNull().default(""), sourceHost: text("source_host").notNull().default(""), sourceUrl: text("source_url").notNull().default(""), sourceName: text("source_name").notNull().default(""), createdAt: text("created_at").notNull().default(""), viewCount: integer("view_count").notNull().default(0), summaryJson: text("summary_json").notNull().default("{}"), fingerprint: text("fingerprint").notNull(), contentVersion: integer("content_version").notNull().default(1), indexStatus: text("index_status").notNull().default("pending"), indexMessage: text("index_message").notNull().default(""), duplicateKey: text("duplicate_key").notNull(), thumbnailKey: text("thumbnail_key"), previewKey: text("preview_key"), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, t => [index("search_v2_type").on(t.sourceType,t.sourceId),index("search_v2_filters").on(t.subject,t.year,t.school),index("search_v2_title").on(t.normalizedTitle),index("search_v2_duplicates").on(t.duplicateKey)]);
+export const searchV2Chunks = sqliteTable("search_v2_chunks", {
+  id: integer("id").primaryKey({autoIncrement:true}), documentId: text("document_id").notNull().references(()=>searchV2Documents.id,{onDelete:"cascade"}), chunkKey: text("chunk_key").notNull(), field: text("field").notNull().default("body"), content: text("content").notNull(), normalized: text("normalized").notNull(), compact: text("compact").notNull(), locationJson: text("location_json").notNull().default("{}"), ordinal: integer("ordinal").notNull().default(0),
+}, t=>[unique().on(t.documentId,t.chunkKey),index("search_v2_chunk_document").on(t.documentId,t.ordinal)]);
+export const searchV2Jobs = sqliteTable("search_v2_jobs", {
+  id: text("id").primaryKey(), documentId: text("document_id").notNull().references(()=>searchV2Documents.id,{onDelete:"cascade"}), contentVersion: integer("content_version").notNull(), status: text("status").notNull().default("pending"), attempts: integer("attempts").notNull().default(0), leaseToken: text("lease_token"), leaseUntil: integer("lease_until").notNull().default(0), progressJson: text("progress_json").notNull().default("{}"), error: text("error").notNull().default(""), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, t=>[unique().on(t.documentId,t.contentVersion),index("search_v2_job_pending").on(t.status,t.leaseUntil,t.updatedAt)]);
+export const searchV2Sources = sqliteTable("search_v2_sources", {id:text("id").primaryKey(),name:text("name").notNull(),configJson:text("config_json").notNull(),lastChecked:text("last_checked"),lastError:text("last_error").notNull().default(""),enabled:integer("enabled").notNull().default(1)});
+export const searchV2Control = sqliteTable("search_v2_control", {key:text("key").primaryKey(),value:text("value").notNull()});
+export const searchV2Views = sqliteTable("search_v2_views",{id:text("id").primaryKey(),expiresAt:integer("expires_at").notNull()},t=>[index("search_v2_view_expiry").on(t.expiresAt)]);
+
+export const searchV2Guard=sqliteTable("search_v2_guard",{id:text("id").primaryKey(),valid:integer("valid").notNull()},t=>[check("valid_job_guard",sql`${t.valid}=1`)]);

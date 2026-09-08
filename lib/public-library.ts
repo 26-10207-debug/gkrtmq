@@ -1,3 +1,6 @@
+import {searchLibrary,searchReady} from "./search-service";
+import {publicIndexedDocument} from "./search-index-v2";
+import {readJson,type SearchInput} from "./search-model";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { storedAttachments } from "@/lib/contribution-attachments";
 import { contentTypeFor, isTextSource } from "@/lib/upload-types";
@@ -15,19 +18,28 @@ const publicOnly = `(source_type = 'contribution' AND EXISTS (SELECT 1 FROM cont
   OR (source_type = 'reference' AND EXISTS (SELECT 1 FROM reference_library r WHERE r.id = source_id))
   OR (source_type = 'folder' AND EXISTS (SELECT 1 FROM public_folders f WHERE f.id = source_id AND f.visibility_state = 'published'))`;
 type SearchRow = { sourceId: string; sourceType: string; title: string; body: string; subject: string };
-export async function searchPublic(query: string, origin: string) {
+export async function searchPublic(query: string, origin: string, options: Partial<SearchInput> = {}) {
   await ensureSchema(); const { DB } = getRuntimeEnv(); const q = query.trim().slice(0, 160);
+  if(await searchReady(DB)){const found=await searchLibrary(DB,{...options,query});return {...found,results:found.results.map(row=>{const id=row.sourceType+":"+row.id;const p=new URLSearchParams({material:id});for(const [k,v]of Object.entries(row.matchLocation))if(v!==undefined)p.set(k,String(v));return {...row,id,url:origin+"/?"+p,text:row.searchSnippet};})};}
   if (!q) return { results: [] };
   const rows = await DB.prepare(`SELECT source_id AS sourceId, source_type AS sourceType, title, substr(body, 1, 600) AS body, subject
     FROM search_documents WHERE (${publicOnly}) AND (instr(lower(title), lower(?)) > 0 OR instr(lower(tags), lower(?)) > 0 OR instr(lower(body), lower(?)) > 0)
     ORDER BY CASE WHEN lower(title) = lower(?) THEN 0 WHEN instr(lower(title), lower(?)) > 0 THEN 1 ELSE 2 END LIMIT 20`).bind(q, q, q, q, q).all<SearchRow>();
   return { results: rows.results.map((row) => ({ id: `${row.sourceType}:${row.sourceId}`, title: row.title, url: `${origin}/?material=${encodeURIComponent(`${row.sourceType}:${row.sourceId}`)}`, text: row.body.slice(0, 300), subject: row.subject })) };
 }
-export async function fetchPublic(inputId: string, origin: string) {
+export async function fetchPublic(inputId: string, origin: string, offset=0) {
+  if(!Number.isSafeInteger(offset)||offset<0||offset>1000000)throw new Error("본문 구간 번호를 확인해 주세요.");
   await ensureSchema(); const { DB } = getRuntimeEnv();
   const separator = inputId.indexOf(":"); const type = separator < 0 ? "contribution" : inputId.slice(0, separator); const id = separator < 0 ? inputId : inputId.slice(separator + 1);
   if (!id || id.length > 200) throw new Error("자료 ID를 확인해 주세요.");
   const url = `${origin}/?material=${encodeURIComponent(`${type}:${id}`)}`;
+  if(await searchReady(DB)){
+    const doc=await publicIndexedDocument(DB,type+":"+id);if(!doc)throw new Error("공개 자료를 찾을 수 없습니다.");
+    const rows=await DB.prepare("SELECT content,location_json FROM search_v2_chunks WHERE document_id=? AND field<>'meta' ORDER BY ordinal,id LIMIT 11 OFFSET ?").bind(type+":"+id,offset).all<{content:string;location_json:string}>();
+    const summary=readJson<Record<string,unknown>>(doc.summary_json,{});const sections=rows.results.slice(0,10).map(r=>({text:r.content,...readJson(r.location_json,{})}));
+    const items=type==="folder"?(await DB.prepare("SELECT c.id,c.title FROM public_folder_items fi JOIN contributions c ON c.id=fi.contribution_id WHERE fi.folder_id=? AND c.status IN ('published','published_ai') ORDER BY fi.position").bind(id).all<{id:string;title:string}>()).results.map(item=>({id:'contribution:'+item.id,title:item.title,url:origin+'/?material='+encodeURIComponent('contribution:'+item.id)})):undefined;
+    return {items,id:type+":"+id,title:String(doc.title),url,text:sections.length?sections.map(s=>s.text).join("\n\n"):String(doc.description),sections,nextOffset:rows.results.length>10?offset+10:null,metadata:{licenseNote:summary.licenseNote,subject:doc.subject,tags:readJson(doc.tags_json,[]),sourceUrl:doc.source_url,sourceName:doc.source_name,indexStatus:doc.index_status,indexMessage:doc.index_message,truncated:rows.results.length>10},files:(Array.isArray(summary.attachments)?summary.attachments:[]).map((f,i)=>({...f,index:i,name:f.originalName,url:origin+"/api/files?id="+encodeURIComponent(id)+"&attachment="+i}))};
+  }
   if (type === "contribution") {
     const row = await DB.prepare(`SELECT id, title, subject, source_note AS sourceNote, owner_display_name AS author, created_at AS createdAt,
       extracted_text AS text, custom_materials_json AS materials, learning_json AS learning, questions_json AS questions,

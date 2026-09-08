@@ -8,6 +8,9 @@ export function MaterialPlayer(props: PlayerProps) {
 }
 function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProps) {
   const [url, setUrl] = useState(""); const [busy, setBusy] = useState(false); const [message, setMessage] = useState("");
+  const [fallbackFull,setFallbackFull]=useState(false),[viewport,setViewport]=useState({width:1280,height:720}),[fit,setFit]=useState(false),[box,setBox]=useState({width:300,height:400});const stage=useRef<HTMLDivElement>(null);
+  useEffect(()=>{if(!stage.current)return;const observer=new ResizeObserver(([e])=>setBox({width:e.contentRect.width,height:e.contentRect.height}));observer.observe(stage.current);return()=>observer.disconnect()},[url]);
+  useEffect(()=>{if(!fallbackFull)return;const old=document.body.style.overflow;document.body.style.overflow="hidden";const escape=(e:KeyboardEvent)=>{if(e.key==="Escape")setFallbackFull(false)};addEventListener("keydown",escape);return()=>{document.body.style.overflow=old;removeEventListener("keydown",escape)}},[fallbackFull]);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenBusy, setFullscreenBusy] = useState(false);
   const frame = useRef<HTMLIFrameElement>(null); const container = useRef<HTMLDivElement>(null); const previewState = useRef<unknown>(null);
@@ -22,6 +25,7 @@ function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProp
   async function toggleFullscreen() {
     const player = container.current;
     if (!player || fullscreenBusy) return;
+    if(fallbackFull){setFallbackFull(false);return;}
     setFullscreenBusy(true);
     try {
       if (document.fullscreenElement && player.contains(document.fullscreenElement)) {
@@ -29,10 +33,10 @@ function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProp
       } else if (player.requestFullscreen) {
         await player.requestFullscreen();
       } else {
-        setMessage("이 브라우저에서는 전체 화면을 지원하지 않습니다.");
+        setFallbackFull(true);
       }
     } catch {
-      setMessage(document.fullscreenElement ? "전체 화면을 해제하지 못했습니다. 다시 누르거나 Esc 키를 눌러 주세요." : "전체 화면으로 전환하지 못했습니다. 다시 시도해 주세요.");
+      if(!document.fullscreenElement)setFallbackFull(true);else setMessage("전체 화면 해제를 다시 눌러 주세요.");
     } finally {
       setFullscreenBusy(false);
     }
@@ -65,23 +69,24 @@ function RuntimePlayer({ sourceId, kind = "public", attachment = 0 }: PlayerProp
     setBusy(true); setMessage(""); setUrl("");
     try {
       const response = await fetch("/api/runtime-launch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: sourceId, kind, attachment }), signal: controller.signal });
-      const data = await response.json() as { url?: string; error?: string };
+      const data = await response.json() as { url?: string; error?: string;viewport?:{width:number;height:number;mode?:"fit"|"mobile"} };
       if (!response.ok || !data.url) throw new Error(data.error || "실행 자료를 열지 못했습니다.");
-      if (!controller.signal.aborted) setUrl(data.url);
+      if (!controller.signal.aborted){setUrl(data.url);setViewport(data.viewport||{width:1280,height:720});setFit(Boolean(data.viewport&&data.viewport.mode!=="mobile"));}
     } catch (error) { if (!controller.signal.aborted) { setMessage(error instanceof Error ? error.message : "실행 오류"); setBusy(false); } }
   }
   function stop() {
-    abort.current?.abort(); setUrl(""); setBusy(false);
+    abort.current?.abort(); setUrl(""); setBusy(false);setFallbackFull(false);
     if (document.fullscreenElement && container.current?.contains(document.fullscreenElement)) {
       void document.exitFullscreen().catch(() => setMessage("전체 화면 해제 버튼을 누르거나 Esc 키를 눌러 주세요."));
     }
   }
-  return <div ref={container} className="material-player" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
+  return <div ref={container} className={"material-player"+(fallbackFull?" material-fallback-full":"")} onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}>
     <div className="material-player-toolbar"><strong>웹 자료</strong><div>
       {!url ? <button type="button" className="primary-button compact" disabled={!sourceId || busy} onClick={start}>{busy ? "준비 중…" : "▶ 실행"}</button> : <><button type="button" className="secondary-button" onClick={stop}>중지</button><button type="button" className="secondary-button" onClick={start}>다시 시작</button></>}
-      {(url || fullscreen) && <button type="button" className="secondary-button" aria-pressed={fullscreen} disabled={fullscreenBusy} onClick={toggleFullscreen}>{fullscreen ? "전체 화면 해제" : "전체 화면"}</button>}
+      {(url || fullscreen || fallbackFull) && <button type="button" className="secondary-button" aria-pressed={fullscreen||fallbackFull} disabled={fullscreenBusy} onClick={toggleFullscreen}>{fullscreen||fallbackFull ? "전체 화면 해제" : "전체 화면"}</button>}
     </div></div>
-    {url ? <iframe ref={frame} src={url} title="업로드한 웹 자료 실행" sandbox="allow-scripts" allow="fullscreen" allowFullScreen referrerPolicy="no-referrer" /> : <div className="material-player-empty"><span aria-hidden="true">▷</span><strong>{sourceId ? "준비된 웹 자료를 실행해 보세요" : "원본을 저장하면 실행할 수 있어요"}</strong><p>HTML 파일이나 index.html이 포함된 웹용 ZIP을 열 수 있습니다.</p><a href="/connect#web-materials" target="_blank" rel="noreferrer">제작 방법과 예제</a></div>}
+    {url&&<div className="document-controls"><button aria-pressed={!fit} onClick={()=>setFit(false)}>모바일 배치</button><button aria-pressed={fit} onClick={()=>setFit(true)}>PC 화면 전체 맞춤 ({viewport.width}×{viewport.height})</button></div>}
+    {url ? <div ref={stage} className="material-stage"><iframe style={fit?{position:"absolute",width:viewport.width,height:viewport.height,transformOrigin:"0 0",transform:`scale(${Math.min(box.width/viewport.width,box.height/viewport.height)})`,left:(box.width-viewport.width*Math.min(box.width/viewport.width,box.height/viewport.height))/2,top:(box.height-viewport.height*Math.min(box.width/viewport.width,box.height/viewport.height))/2}:undefined} ref={frame} src={url} title="업로드한 웹 자료 실행" sandbox="allow-scripts" allow="fullscreen" allowFullScreen referrerPolicy="no-referrer" /></div> : <div className="material-player-empty"><span aria-hidden="true">▷</span><strong>{sourceId ? "준비된 웹 자료를 실행해 보세요" : "원본을 저장하면 실행할 수 있어요"}</strong><p>HTML 파일이나 index.html이 포함된 웹용 ZIP을 열 수 있습니다.</p><a href="/connect#web-materials" target="_blank" rel="noreferrer">제작 방법과 예제</a></div>}
     {busy && url && <p role="status">자료를 불러오는 중입니다…</p>}
     {message && <p className="material-player-message" role="status">{message}</p>}
   </div>;

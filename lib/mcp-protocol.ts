@@ -1,8 +1,8 @@
 export type ToolSpec = { name: string; description: string; inputSchema: Record<string, unknown>; annotations: Record<string, boolean> };
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 export const libraryTools: ToolSpec[] = [
-  { name: "search", description: "덤캔런의 공개 학습 자료·참고 자료·폴더를 검색합니다. 결과 ID와 원문 URL을 반환합니다.", inputSchema: { type: "object", properties: { query: { type: "string", maxLength: 160 } }, required: ["query"], additionalProperties: false }, annotations: readOnly },
-  { name: "fetch", description: "검색 결과 ID로 공개 자료의 본문·학습 도구·출처·첨부 파일 목록을 읽습니다. 긴 소스 코드는 read_file을 사용하세요.", inputSchema: { type: "object", properties: { id: { type: "string", maxLength: 240 } }, required: ["id"], additionalProperties: false }, annotations: readOnly },
+  { name: "search", description: "덤캔런의 공개 학습 자료·참고 자료·폴더를 검색합니다. 결과 ID와 원문 URL을 반환합니다.", inputSchema: { type: "object", properties: { query: { type: "string", maxLength: 160 }, subject:{type:"string"},year:{type:"string"},grade:{type:"string"},school:{type:"string"},exam:{type:"string"},filetype:{type:"string"},site:{type:"string"},type:{type:"string"},sort:{type:"string",enum:["relevance","newest","views"]},cursor:{type:"string"},limit:{type:"integer",minimum:1,maximum:50} }, required: ["query"], additionalProperties: false }, annotations: readOnly },
+  { name: "fetch", description: "검색 결과 ID로 공개 자료의 본문·학습 도구·출처·첨부 파일 목록을 읽습니다. 긴 소스 코드는 read_file을 사용하세요.", inputSchema: { type: "object", properties: { id: { type: "string", maxLength: 240 },offset:{type:"integer",minimum:0} }, required: ["id"], additionalProperties: false }, annotations: readOnly },
   { name: "read_file", description: "공개 첨부 코드·텍스트를 읽거나 ZIP 파일 목록을 확인합니다. ZIP의 path를 지정하면 해당 파일을 읽습니다. nextOffset으로 이어서 읽을 수 있습니다. 프로그램은 실행하지 않습니다.", inputSchema: { type: "object", properties: { id: { type: "string", maxLength: 240 }, attachment: { type: "integer", minimum: 0, default: 0 }, path: { type: "string", maxLength: 500 }, offset: { type: "integer", minimum: 0, default: 0 } }, required: ["id"], additionalProperties: false }, annotations: readOnly },
 ];
 type Rpc = { jsonrpc?: string; id?: string | number | null; method?: string; params?: Record<string, unknown> };
@@ -21,10 +21,12 @@ export async function handleRpc(message: unknown, call: (name: string, args: Rec
     const name = String(msg.params?.name || ""); const args = msg.params?.arguments as Record<string, unknown>;
     if (!libraryTools.some((tool) => tool.name === name)) return fail(-32602, "Unknown tool");
     if (!args || Array.isArray(args) || typeof args !== "object") return fail(-32602, "Invalid arguments");
-    const allowed = name === "search" ? ["query"] : name === "fetch" ? ["id"] : ["id", "attachment", "path", "offset"];
+    const allowed = name === "search" ? ["query","subject","year","grade","school","exam","filetype","site","type","sort","cursor","limit"] : name === "fetch" ? ["id","offset"] : ["id", "attachment", "path", "offset"];
     if (Object.keys(args).some((key) => !allowed.includes(key))) return fail(-32602, "Unknown argument");
     const key = name === "search" ? "query" : "id";
     if (typeof args[key] !== "string" || String(args[key]).length > (key === "query" ? 160 : 240)) return fail(-32602, "Invalid query or id");
+    if(name==="search"&&Object.entries(args).some(([k,v])=>k==="limit"?(!Number.isInteger(v)||Number(v)<1||Number(v)>50):typeof v!=="string"||v.length>(k==="cursor"?4096:160)))return fail(-32602,"Invalid search arguments");
+    if(name==="fetch"&&args.offset!==undefined&&(!Number.isSafeInteger(args.offset)||Number(args.offset)<0))return fail(-32602,"Invalid offset");
     if (name === "read_file" && ((args.attachment !== undefined && (!Number.isInteger(args.attachment) || Number(args.attachment) < 0)) || (args.offset !== undefined && (!Number.isInteger(args.offset) || Number(args.offset) < 0 || Number(args.offset) > 20_000_000)) || (args.path !== undefined && (typeof args.path !== "string" || args.path.length > 500)))) return fail(-32602, "Invalid file arguments");
     try { result = { content: [{ type: "text", text: JSON.stringify(await call(name, args)) }] }; }
     catch (error) { result = { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : "자료를 읽지 못했습니다." }] }; }

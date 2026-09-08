@@ -1,0 +1,42 @@
+const fs=require('node:fs'),path=require('node:path'),ts=require('typescript'),{DatabaseSync}=require('node:sqlite'),assert=require('node:assert/strict');
+require.extensions['.ts']=(module,file)=>module._compile(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,file);
+const {searchSchema}=require('../lib/search-schema.ts');
+const {normalizeSearch,compactSearch,initials,shortGrams}=require('../lib/search-model.ts');
+const {searchLibrary,buildSearchQuery,suggestSearch}=require('../lib/search-service.ts');
+const {chunkStatements,deleteChunks,deleteSectionChunks}=require('../lib/search-index-v2.ts');
+const Module=require('node:module'),originalLoad=Module._load;Module._load=function(request,parent,main){if(request==='@/db/runtime')return {getRuntimeEnv:()=>({})};return originalLoad.call(this,request,parent,main)};const {jobGuard}=require('../lib/indexer-auth.ts');Module._load=originalLoad;
+const sqlite=new DatabaseSync(':memory:');sqlite.exec('PRAGMA foreign_keys=ON; CREATE TABLE contributions(id TEXT PRIMARY KEY,status TEXT); CREATE TABLE reference_library(id TEXT PRIMARY KEY); CREATE TABLE public_folders(id TEXT PRIMARY KEY,visibility_state TEXT);'+searchSchema.join(';')+";INSERT INTO search_v2_control VALUES('version','test');");
+function prepared(sql,values=[]){const s=sqlite.prepare(sql);return {sql,values,bind(...v){assert(v.length<=100,'D1 parameter limit');return prepared(sql,v);},async all(){return{results:s.all(...values)}},async first(){return s.get(...values)||null},async run(){return s.run(...values)}}}
+const DB={prepare:prepared,async batch(items){sqlite.exec('BEGIN');try{const results=[];for(const item of items)results.push(await item.all());sqlite.exec('COMMIT');return results;}catch(e){sqlite.exec('ROLLBACK');throw e;}}};
+function add(id,title,body='',extras={}){sqlite.prepare('INSERT INTO contributions VALUES(?,?)').run(id,extras.private?'draft':'published');const doc='contribution:'+id;
+ sqlite.prepare(`INSERT INTO search_v2_documents(id,source_id,source_type,title,normalized_title,compact_title,title_initials,subject,year,school,file_type,fingerprint,duplicate_key,index_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(doc,id,'contribution',title,normalizeSearch(title),compactSearch(title),initials(title),'국어','2026','보인고','pdf','test',extras.duplicate||doc,'completed');
+ for(const [i,text]of [title,...(Array.isArray(body)?body:[body])].entries()){if(!text)continue;const c=sqlite.prepare('INSERT INTO search_v2_chunks(document_id,chunk_key,field,content,normalized,compact,location_json) VALUES(?,?,?,?,?,?,?)').run(doc,''+i,i?'body':'meta',text,normalizeSearch(text),compactSearch(text),JSON.stringify(i?{page:i,attachment:0}:{}));sqlite.prepare('INSERT INTO search_v2_fts(rowid,normalized,compact) VALUES(?,?,?)').run(c.lastInsertRowid,normalizeSearch(text),compactSearch(text));sqlite.prepare('INSERT INTO search_v2_short(rowid,grams) VALUES(?,?)').run(c.lastInsertRowid,shortGrams(text));}}
+(async()=>{
+ for(let i=0;i<125;i++)add('bulk'+String(i).padStart(4,'0'),'국어 연습 '+i,'보인고 2026 관성 학습 자료');
+ add('exact','관성','유일한 정확한 제목');add('hidden','관성 비공개','비밀',{private:true});add('torque','돌림힘 심화',['힘의 방향','회전하는 물체']);add('split','교과서',['서로 다른 페이지의 관성','여기에는 돌림힘']);add('late','긴 문서',['가'.repeat(100001),'뒤쪽유일검색어']);add('code','main.js','function uniqueCodeSymbol() {}');
+ assert.equal((await searchLibrary(DB,{query:'관성'})).results[0].id,'exact');
+ let page=await searchLibrary(DB,{query:'국어',year:'2026'}),ids=[];while(true){ids.push(...page.results.map(x=>x.id));if(!page.nextCursor)break;page=await searchLibrary(DB,{query:'국어',year:'2026',cursor:page.nextCursor});}assert.equal(new Set(ids).size,ids.length);assert(ids.length>60);
+ assert((await searchLibrary(DB,{query:'토크'})).results.some(x=>x.id==='torque'));
+ add('repeat-title','문 문 손잡이');add('short-title','문 손잡이');assert.equal((await searchLibrary(DB,{query:'문 문 손잡이'})).results[0].id,'repeat-title');
+ add('long-title','one two three four five six seven eight nine ten eleven twelve');assert.equal((await searchLibrary(DB,{query:'one two three four five six seven eight nine ten eleven twelve'})).results[0].id,'long-title');
+ add('perfect','현재완료');assert((await searchLibrary(DB,{query:'present perfect'})).results.some(x=>x.id==='perfect'));
+ const {snippet}=require('../lib/search-model.ts');assert(snippet('앞 '.repeat(150)+'돌림힘', [{value:'토크',phrase:false,excluded:false}]).includes('[[돌림힘]]'));assert(snippet('관 성 법칙', [{value:'관성',phrase:false,excluded:false}]).includes('[[관 성]]'));
+ assert((await searchLibrary(DB,{query:'관성 돌림힘'})).results.some(x=>x.id==='split'));
+ assert((await searchLibrary(DB,{query:'관성 -비공개'})).results.every(x=>x.id!=='hidden'));
+ assert.equal((await searchLibrary(DB,{query:'뒤쪽유일검색어'})).results[0].id,'late');
+ assert.equal((await searchLibrary(DB,{query:'uniqueCodeSymbol'})).results[0].id,'code');
+ assert((await searchLibrary(DB,{query:'ㄷㄹㅎ'})).results.some(x=>x.id==='torque'));
+ assert((await searchLibrary(DB,{query:'과목:국어 연도:2026 학교:보인고 관성 filetype:pdf'})).results.length);
+ assert(buildSearchQuery({query:Array(10).fill('토크').join(' ')}).bindings.length<=100);
+ await suggestSearch(DB,'이것은아주길고일반적인한국어검색문장입니다');
+ add('replace','구간 교체 시험');await DB.batch(chunkStatements(DB,'contribution:replace',[{text:'앞부분 '.repeat(1200)+'OLD_TAIL_TOKEN',ordinal:0,page:1}]));await DB.batch(chunkStatements(DB,'contribution:replace',[{text:'NEW_TOKEN',ordinal:0,page:1}]));assert.equal((await searchLibrary(DB,{query:'OLD_TAIL_TOKEN'})).results.length,0);assert.equal((await searchLibrary(DB,{query:'NEW_TOKEN'})).results.length,1);
+ await DB.batch(chunkStatements(DB,'contribution:replace',[{text:'AUTHORED_TOOL_TOKEN',ordinal:0}],'authored'));await DB.batch(deleteChunks(DB,'contribution:replace','body'));assert.equal((await searchLibrary(DB,{query:'AUTHORED_TOOL_TOKEN'})).results.length,1);
+ sqlite.prepare("INSERT INTO search_v2_jobs(id,document_id,content_version,status,lease_token,lease_until) VALUES(?,?,1,'processing','new-lease',?)").run('lease-test','contribution:replace',Date.now()+60000);
+ const stale=jobGuard(DB,'lease-test','old-lease');await assert.rejects(DB.batch([stale.start,...deleteChunks(DB,'contribution:replace','authored'),stale.end]));assert.equal((await searchLibrary(DB,{query:'AUTHORED_TOOL_TOKEN'})).results.length,1);
+ const live=jobGuard(DB,'lease-test','new-lease');await DB.batch([live.start,...chunkStatements(DB,'contribution:replace',[{text:'LEASE_VALID',ordinal:0}]),live.end]);assert.equal((await searchLibrary(DB,{query:'LEASE_VALID'})).results.length,1);
+ const reordered=await searchLibrary(DB,{year:'2026',query:'국어'});assert((await searchLibrary(DB,{query:'국어',year:'2026',cursor:reordered.nextCursor})).results.length);
+ await DB.batch(chunkStatements(DB,'contribution:replace',[{text:'PART_ZERO',ordinal:4,page:9,path:'resume.pdf'},{text:'STALE_RESUME_TAIL',ordinal:5,page:9,path:'resume.pdf'}]));await DB.batch([...deleteSectionChunks(DB,'contribution:replace',{text:'',page:9,path:'resume.pdf'}),...chunkStatements(DB,'contribution:replace',[{text:'SHORT_RETRY',ordinal:4,page:9,path:'resume.pdf'}])]);assert.equal((await searchLibrary(DB,{query:'STALE_RESUME_TAIL'})).results.length,0);
+ const times=[];const start=performance.now();sqlite.exec('BEGIN');for(let i=0;i<10000;i++)add('scale'+i,'시험 색인 '+i,'한국어 국어 관성 기본 내용 '+i);sqlite.exec('COMMIT');const indexMs=performance.now()-start;
+ for(let i=0;i<30;i++){const t=performance.now();await searchLibrary(DB,{query:['관성','국어','시험 색인','토크','뒤쪽유일검색어'][i%5]});times.push(performance.now()-t);}times.sort((a,b)=>a-b);
+ console.log(JSON.stringify({passed:true,documents:sqlite.prepare('SELECT count(*) AS n FROM search_v2_documents').get().n,sqliteBytes:sqlite.prepare('PRAGMA page_count').get().page_count*sqlite.prepare('PRAGMA page_size').get().page_size,indexMs:Math.round(indexMs),localSqliteP95ms:Math.round(times[Math.floor(times.length*.95)]),note:'Local SQLite correctness/load check, not production D1/network benchmark.'},null,2));
+})().catch(e=>{console.error(e);process.exitCode=1});

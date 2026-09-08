@@ -83,3 +83,5 @@
   .contribution-workspace-final .final-source-tools { grid-template-columns: repeat(4,minmax(0,1fr)); }
   .connection-url { flex-direction: column; }
 }
+
+.material-stage{position:relative;width:100%;height:clamp(350px,65vh,780px);overflow:hidden}.material-stage>iframe{width:100%;height:100%;border:0;max-width:none}.material-fallback-full{position:fixed!important;inset:0;z-index:1500;height:100dvh!important;width:100vw!important;background:white;display:flex;flex-direction:column;border-radius:0!important;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}.material-player:fullscreen .material-stage,.material-fallback-full .material-stage{flex:1;min-height:0;height:0}.material-player-toolbar{flex-shrink:0;position:relative;z-index:5;flex-wrap:wrap}.material-player-toolbar>div{display:flex;flex-wrap:wrap;gap:6px}.material-player:fullscreen .material-stage>iframe{flex:none;max-width:none}.material-player .document-controls{flex-shrink:0}

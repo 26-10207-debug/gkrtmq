@@ -23,6 +23,6 @@ export async function POST(request: Request) {
     const active = await DB.prepare("SELECT COUNT(*) AS count FROM material_runtime_sessions WHERE source_id = ?").bind(session.sourceId).first<{ count: number }>();
     if (Number(active?.count) >= 100) return Response.json({ error: "실행 요청이 많습니다. 잠시 후 다시 시도해 주세요." }, { status: 429 });
     await DB.prepare("INSERT INTO material_runtime_sessions(token_hash, source_id, source_kind, attachment_index, owner_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)").bind(await tokenHash(token), session.sourceId, session.sourceKind, session.attachmentIndex, session.ownerId, now + 60 * 60 * 1000).run();
-    return Response.json({ url: `/api/runtime/${token}/${pkg.entry!.split("/").map(encodeURIComponent).join("/")}`, expiresAt: now + 60 * 60 * 1000 }, { headers: { "Cache-Control": "no-store" } });
+    return Response.json({ url: `/api/runtime/${token}/${pkg.entry!.split("/").map(encodeURIComponent).join("/")}`, expiresAt: now + 60 * 60 * 1000,viewport:pkg.viewport }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) { return Response.json({ error: error instanceof Error ? error.message : "실행 자료를 열지 못했습니다." }, { status: 422 }); }
 }

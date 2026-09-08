@@ -1,3 +1,4 @@
+import {serveR2File} from "@/lib/file-response";
 import { downloadHeaders } from "@/lib/upload-types";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { storedAttachments } from "@/lib/contribution-attachments";
@@ -22,10 +23,6 @@ export async function GET(request: Request) {
 
   const attachment = storedAttachments(row.attachmentsJson, row)[attachmentIndex];
   if (!attachment) return Response.json({ error: "파일을 찾을 수 없습니다." }, { status: 404 });
-  const object = await UPLOADS.get(attachment.objectKey);
-  if (!object) return Response.json({ error: "저장된 파일을 찾을 수 없습니다." }, { status: 404 });
-
-  await DB.prepare("UPDATE contributions SET view_count = view_count + 1 WHERE id = ?").bind(id).run();
-  const headers = downloadHeaders(attachment.originalName, attachment.contentType);
-  return new Response(object.body, { headers });
+  return serveR2File(request,UPLOADS,attachment.objectKey,downloadHeaders(attachment.originalName,attachment.contentType));
 }
+export const HEAD=GET;

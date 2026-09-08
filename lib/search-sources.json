@@ -1,0 +1,9 @@
+[
+ {"id":"ebsi","name":"EBSi","hosts":["www.ebsi.co.kr"],"paths":["/ebs/xip/"],"seeds":["https://www.ebsi.co.kr/ebs/xip/xipa/retrieveSCVPreparation.ebs?irecord=202510143&targetCd=D300"],"title":"EBSi 수능·모의평가 공개 자료","mode":"metadata","note":"robots와 이용 조건을 확인한 경로만 읽습니다. 본문 재배포 제외."},
+ {"id":"kice","name":"한국교육과정평가원","hosts":["data.kice.re.kr","www.suneung.re.kr"],"paths":["/"],"seeds":["https://data.kice.re.kr/","https://www.suneung.re.kr/"],"title":"평가원 교육 자료·수능 기출문제","mode":"metadata","note":"공개 자료의 제목·설명·원문 링크만 저장합니다."},
+ {"id":"seoul","name":"서울특별시교육청","hosts":["baro.sen.go.kr"],"paths":["/fus/"],"seeds":["https://baro.sen.go.kr/fus/MI000000000000000152/html/cont0010v.do"],"title":"서울교육청 공개 학습 자료","mode":"metadata","note":"공개 자료 안내와 원문 링크."},
+ {"id":"gyeonggi","name":"경기도교육청","hosts":["more.goe.go.kr","www.goe.go.kr"],"paths":["/hagjeomje/","/resource/old/BBSMSTR_000000030028/"],"seeds":["https://more.goe.go.kr/hagjeomje/index.do"],"title":"경기교육청 고교 학습·평가 자료","mode":"metadata","note":"공개 자료 안내와 원문 링크."},
+ {"id":"incheon","name":"인천광역시교육청","hosts":["www.ice.go.kr"],"paths":["/upload/board/1098/"],"seeds":["https://www.ice.go.kr/upload/board/1098/2023/02/6bd6d9eb870aae662daa4bbbff3b1697.pdf"],"title":"인천교육청 공개 시험·학습 자료 안내","mode":"metadata","note":"원본 파일을 복제하지 않습니다. 원문 상태는 갱신 시 확인합니다."},
+ {"id":"openstax","name":"OpenStax","hosts":["openstax.org"],"paths":["/subjects/"],"seeds":["https://openstax.org/subjects/science"],"title":"OpenStax 과학 공개 교재 목록","mode":"metadata","note":"현재 이용 조건에 따라 교재 본문 수집·AI 제공 제외. 안내 링크만 제공합니다."},
+ {"id":"phet","name":"PhET","hosts":["phet.colorado.edu"],"paths":["/ko/simulations/"],"seeds":["https://phet.colorado.edu/ko/simulations/filter?subjects=physics&type=html"],"title":"PhET 물리학 시뮬레이션","mode":"metadata","note":"실행 파일을 복제하지 않고 공식 자료에 연결합니다."}
+]

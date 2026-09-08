@@ -1,7 +1,10 @@
 "use client";
 
-import { CSSProperties, FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { CSSProperties, FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { SearchExplorer } from "./SearchExplorer";
+const DocumentViewer=lazy(()=>import("./DocumentViewer"));
 import { MaterialPlayer, SourceTextPreview } from "./MaterialPlayer";
+import { builtinAssets, examples, recallQuestions } from "@/lib/builtin-materials";
 import { contentTypeFor, isTextSource, isWebPackage, MAX_UPLOAD_BYTES, MAX_TOTAL_UPLOAD_BYTES, MAX_UPLOAD_COUNT } from "@/lib/upload-types";
 import { AuthPanel, SignOutButton } from "./AuthPanel";
 import { ConceptCanvas, ConceptCanvasElement, ConceptModel, CustomMaterials, SourceSelection, conceptShapeDefinitions, emptyCustomMaterials, hasCustomMaterials, hasImageSelection } from "@/lib/custom-materials";
@@ -197,106 +200,7 @@ function previewForAsset(asset: Asset) {
   return image?.url;
 }
 
-const assets: Asset[] = [
-  {
-    id: "torque-core",
-    title: "돌림힘을 직관적으로 이해하기",
-    description: "문을 미는 위치에 따라 회전 효과가 달라지는 이유부터 τ = rF sinθ까지 연결합니다.",
-    type: "개념 설명",
-    tags: ["AI 구조화", "전문가 검토", "고등 물리"],
-    rating: 4.9,
-    reviews: 328,
-    views: 12840,
-    examples: 12,
-    questions: 18,
-    subject: "물리학",
-  },
-  {
-    id: "torque-examples",
-    title: "시소·렌치·문손잡이로 보는 돌림힘",
-    description: "같은 힘도 작용점과 방향에 따라 결과가 달라지는 일상 사례를 비교합니다.",
-    type: "예시·적용",
-    tags: ["AI 통합", "사용자 검증", "그림 8개"],
-    rating: 4.8,
-    reviews: 241,
-    views: 9340,
-    examples: 16,
-    questions: 8,
-    subject: "물리학",
-  },
-  {
-    id: "torque-recall",
-    title: "돌림힘 능동 회상 세트 — 기본에서 평형까지",
-    description: "답을 보기 전 힘의 방향과 회전축을 직접 판단하는 단계별 질문입니다.",
-    type: "회상 문제",
-    tags: ["난이도 조정", "18문항", "약 12분"],
-    rating: 4.7,
-    reviews: 190,
-    views: 6830,
-    examples: 6,
-    questions: 18,
-    subject: "물리학",
-  },
-  {
-    id: "torque-misconceptions",
-    title: "자주 틀리는 돌림힘 판단 7가지",
-    description: "힘이 클수록 무조건 잘 돈다? 회전축·작용선·모멘트 암의 오개념을 반례로 교정합니다.",
-    type: "오개념",
-    tags: ["AI 중복 제거", "반례 14개", "교사 추천"],
-    rating: 4.6,
-    reviews: 118,
-    views: 4210,
-    examples: 14,
-    questions: 7,
-    subject: "물리학",
-  },
-];
-
-const examples = [
-  {
-    eyebrow: "대표 예시",
-    title: "문손잡이는 왜 경첩에서 멀리 있을까?",
-    situation: "같은 20N의 힘으로 문을 밀 때, 경첩에서 10cm 떨어진 곳과 80cm 떨어진 손잡이를 비교해 보세요.",
-    prompt: "어느 쪽이 더 쉽게 열릴지, 그리고 왜 그런지 식을 쓰지 않고 먼저 설명해 보세요.",
-    answer: "손잡이 쪽이 회전축에서 8배 멀기 때문에 같은 힘으로도 8배 큰 돌림힘을 만듭니다. 회전 효과는 힘의 크기뿐 아니라 회전축에서 작용선까지의 수직 거리에도 비례합니다.",
-    takeaway: "회전축에서 멀수록 같은 힘의 회전 효과가 커진다.",
-  },
-  {
-    eyebrow: "조건을 바꾼 예시",
-    title: "손잡이를 비스듬히 밀면 어떻게 될까?",
-    situation: "손잡이를 문에 수직으로 미는 대신 문 쪽을 향해 30° 비스듬히 민다고 생각해 보세요.",
-    prompt: "힘의 크기와 작용점이 같은데도 문이 덜 잘 열리는 이유를 설명해 보세요.",
-    answer: "힘 전체가 회전에 쓰이지 않기 때문입니다. 회전 반지름에 수직인 성분 F sinθ만 돌림힘을 만들고, 반지름 방향 성분은 경첩을 누르거나 당길 뿐 회전시키지 못합니다.",
-    takeaway: "돌림힘에는 힘의 수직 성분만 기여한다.",
-  },
-  {
-    eyebrow: "반례",
-    title: "아주 큰 힘인데도 돌지 않는 경우",
-    situation: "문손잡이를 아무리 세게 밀어도 힘의 작용선이 정확히 경첩을 통과한다면 어떻게 될까요?",
-    prompt: "힘이 매우 큰데도 돌림힘이 0일 수 있는 이유를 생각해 보세요.",
-    answer: "회전축에서 힘의 작용선까지 수직 거리가 0이므로 돌림힘도 0입니다. 힘의 크기만 보고 회전 여부를 판단하면 안 됩니다.",
-    takeaway: "작용선이 회전축을 지나면 힘이 커도 돌림힘은 0이다.",
-  },
-];
-
-const recallQuestions = [
-  {
-    prompt: "돌림힘의 크기를 결정하는 세 가지 요소를 말하고, 각각 커질 때 어떤 변화가 생기는지 설명해 보세요.",
-    answer: "힘의 크기 F, 회전축에서 작용점까지의 거리 r, 두 벡터 사이 각도의 sinθ가 돌림힘을 결정합니다. τ = rF sinθ이며, 나머지 조건이 같다면 각 요소가 커질수록 돌림힘도 커집니다.",
-    rubric: ["힘의 크기 F", "회전축으로부터의 거리 r", "힘의 방향 sinθ", "τ = rF sinθ의 관계"],
-  },
-  {
-    prompt: "문손잡이를 문에 수직으로 미는 것이 가장 효과적인 이유를 힘의 성분 관점에서 설명해 보세요.",
-    answer: "문에 수직으로 밀면 힘 전체가 회전 반지름에 수직인 성분이 되어 sinθ = 1입니다. 따라서 같은 힘과 거리에서 돌림힘이 최대가 됩니다.",
-    rubric: ["수직 성분", "sinθ = 1", "돌림힘 최대"],
-  },
-  {
-    prompt: "물체가 회전 평형을 이루기 위한 돌림힘 조건은 무엇인가요? 시계 방향과 반시계 방향을 포함해 설명해 보세요.",
-    answer: "회전축에 대한 알짜 돌림힘이 0이어야 합니다. 즉, 부호를 고려했을 때 시계 방향 돌림힘의 합과 반시계 방향 돌림힘의 합이 같아야 합니다.",
-    rubric: ["알짜 돌림힘 0", "시계 방향 합", "반시계 방향 합", "두 합이 같음"],
-  },
-];
-
+const assets: Asset[] = builtinAssets;
 const modes: Array<{ id: StudyMode; number: string; title: string; description: string; meta: string }> = [
   { id: "info", number: "01", title: "정보만 보기", description: "핵심 개념과 공식을 짧고 명확하게 읽습니다.", meta: "약 4분 · AI 없음" },
   { id: "examples", number: "02", title: "예시로 학습", description: "대표 예시, 조건을 바꾼 예시, 반례를 비교합니다.", meta: "약 10분 · AI 없음" },
@@ -308,7 +212,9 @@ function formatViews(value: number) {
   return value >= 10000 ? `${(value / 10000).toFixed(1)}만` : value.toLocaleString("ko-KR");
 }
 
-export function LearningApp({ user }: { user: AccountUser | null }) {
+export function LearningApp({ user:initialUser }: { user: AccountUser | null }) {
+  const [user,setUser]=useState(initialUser);
+  useEffect(()=>{const controller=new AbortController();fetch("/api/session-user",{signal:controller.signal}).then(r=>r.ok?r.json():{user:null}).then(data=>setUser(data.user)).catch(()=>{});return()=>controller.abort()},[]);
   const [view, setView] = useState<View>("search");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("전체");
@@ -344,7 +250,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     if (!material) return;
     const [kind, ...parts] = material.split(":"); const id = parts.join(":");
     async function openLinkedMaterial() {
-      if (kind === "contribution") {
+      if(kind === "builtin"){const item=assets.find(a=>a.id===id);if(!item)throw new Error("자료를 찾을 수 없습니다.");if(active){setSelectedAsset(item);setView("detail");}} else if (kind === "contribution") {
         const response = await fetch(`/api/contributions?id=${encodeURIComponent(id)}`);
         const data = await response.json() as { contributions?: ContributionRecord[] };
         if (!response.ok || !data.contributions?.[0]) throw new Error("공개 자료를 찾을 수 없습니다.");
@@ -361,7 +267,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         if (active) { setSelectedAsset(referenceToAsset({ id, title: data.title, description: data.text, topic: "공개 참고", ...data.metadata, accessMode: "external_link", tagsJson: "[]" })); setView("detail"); }
       }
     }
-    void openLinkedMaterial().catch(() => { if (active) { setQuery("자료를 찾을 수 없습니다"); setHasSearched(true); } }).finally(() => { linkedMaterialResolved.current = true; });
+    void openLinkedMaterial().catch(() => { if(active){setDetailError("자료를 찾을 수 없거나 공개가 해제되었습니다.");setView("detail");} }).finally(() => { linkedMaterialResolved.current = true; });
     return () => { active = false; };
   }, []);
 
@@ -401,32 +307,6 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
 
   const allAssets = useMemo(() => [...communityAssets, ...referenceAssets, ...assets], [communityAssets, referenceAssets]);
 
-  useEffect(() => {
-    if (!hasSearched || !query) return;
-    let active = true;
-    const controller = new AbortController();
-    setSearching(true);
-    const params = new URLSearchParams({ q: query, subject, type: filter, sort, summary: "1" });
-    fetch(`/api/search?${params}`, { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : { results: [] })
-      .then((data: { results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
-        if (!active) return;
-        const folderResults = (data.results || []).filter((item) => item.sourceType === "folder") as unknown as FolderRecord[];
-        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => ({ ...(item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item)), searchSnippet: item.searchSnippet }));
-        const staticMatches = assets.filter((asset) => {
-          const text = `${asset.title} ${asset.description} ${asset.subject} ${asset.tags.join(" ")}`.toLowerCase();
-          return text.includes(query.toLowerCase()) && (subject === "전체" || asset.subject === subject) && (filter === "전체" || asset.type === filter);
-        });
-        setSearchAssets([...dynamic, ...staticMatches]);
-        setSearchFolders(folderResults);
-        setRelatedTerms(data.related || []);
-        if (data.subjects?.length) setSearchSubjects((current) => [...new Set([...current, ...data.subjects!])]);
-      })
-      .catch(() => { if (active) { setSearchAssets([]); setSearchFolders([]); } })
-      .finally(() => { if (active) setSearching(false); });
-    return () => { active = false; controller.abort(); };
-  }, [filter, hasSearched, query, sort, subject]);
-
   const continuedAsset = useMemo(() => {
     const latest = progress[0];
     return latest ? allAssets.find((asset) => asset.id === latest.assetId) : undefined;
@@ -463,6 +343,7 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
   }
 
   useEffect(() => { if (view !== "detail") detailAbort.current?.abort(); }, [view]);
+  useEffect(()=>{if(view!=="detail"||!selectedAsset.isUpload||detailLoading)return;const key='dcl-view:'+selectedAsset.id;try{if(sessionStorage.getItem(key))return;sessionStorage.setItem(key,'1');}catch{}void fetch('/api/views?id='+encodeURIComponent(selectedAsset.id),{method:'POST'}).catch(()=>{});},[view,selectedAsset.id,selectedAsset.isUpload,detailLoading]);
   useEffect(() => () => { detailAbort.current?.abort(); }, []);
 
   function openDraft(draft: DraftRecord) {
@@ -487,16 +368,8 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
     setView("folder"); window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function showHome() {
-    const url = new URL(window.location.href); url.searchParams.delete("material");
-    window.history.replaceState(window.history.state, "", url.pathname + url.search + url.hash);
-    setView("search");
-    setHasSearched(false);
-    setQuery("");
-    setFilter("전체");
-    setSubject("전체");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
+  function backToSearch(){const url=new URL(window.location.href);["material","attachment","page","path","line"].forEach(k=>url.searchParams.delete(k));window.history.replaceState({},"",url.pathname+url.search);setView("search");}
+  function showHome(){window.location.assign("/");}
 
   function runSearch(value: string) {
     setQuery(value.trim());
@@ -571,36 +444,9 @@ export function LearningApp({ user }: { user: AccountUser | null }) {
         isHome={view === "search"}
       />
 
-      {view === "search" && (
-        <SearchScreen
-          query={query}
-          filter={filter}
-          sort={sort}
-          hasSearched={hasSearched}
-          assets={searchAssets}
-          subject={subject}
-          subjects={searchSubjects}
-          relatedTerms={relatedTerms}
-          searching={searching}
-          user={user}
-          continuedAsset={continuedAsset}
-          myAsset={myAsset}
-          recommendation={recommendation}
-          reference={reference}
-          onFilter={setFilter}
-          onSubject={setSubject}
-          onSort={setSort}
-          onSearch={runSearch}
-          onOpen={openAsset}
-          folders={searchFolders}
-          onOpenFolder={openFolder}
-          onUpdated={updatePublishedContribution}
-          onContribute={() => { setActiveDraft(null); setView(user ? "contribute" : "account"); }}
-          onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
-        />
-      )}
-      {view === "detail" && (detailLoading || detailError ? <main className="account-main"><button className="back-button" type="button" onClick={() => setView("search")}>← 검색 결과</button><p role="status">{detailError || "자료를 불러오는 중…"}</p>{detailError && <button className="secondary-button" type="button" onClick={() => openAsset(selectedAsset)}>다시 시도</button>}</main> : <DetailScreen asset={selectedAsset} onBack={() => setView("search")} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />)}
-      {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={() => setView("search")} onOpen={openAsset} />}
+      {view === "search" && <SearchExplorer />}
+      {view === "detail" && (detailLoading || detailError ? <main className="account-main"><button className="back-button" type="button" onClick={backToSearch}>← 검색 결과</button><p role="status">{detailError || "자료를 불러오는 중…"}</p>{detailError && <button className="secondary-button" type="button" onClick={() => openAsset(selectedAsset)}>다시 시도</button>}</main> : <DetailScreen asset={selectedAsset} onBack={backToSearch} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />)}
+      {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={backToSearch} onOpen={openAsset} />}
       {view === "study" && (
         <StudyScreen
           mode={studyMode}
@@ -795,29 +641,7 @@ function AttachmentPreview({ attachments }: { attachments: NonNullable<Asset["at
 }
 
 function AssetSourceViewer({ asset }: { asset: Asset }) {
-  const attachments = asset.attachments || [];
-  const [index, setIndex] = useState(0);
-  const [zoom, setZoom] = useState(1);
-  const viewport = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number } | null>(null);
-  const attachment = attachments[index]; const preview = attachment?.url || previewForAsset(asset);
-  return <div className="readonly-source-stage universal-source-viewer">
-    <div className="source-stage-status"><div className="source-file-nav">
-      <button type="button" aria-label="이전 파일" disabled={index === 0} onClick={() => { setIndex((value) => Math.max(0, value - 1)); setZoom(1); }}>←</button>
-      <span>{attachment?.originalName || asset.originalName || "학습 원문"}</span>
-      <button type="button" aria-label="다음 파일" disabled={index >= attachments.length - 1} onClick={() => { setIndex((value) => Math.min(attachments.length - 1, value + 1)); setZoom(1); }}>→</button>
-    </div>{attachment?.contentType.startsWith("image/") && <div className="readonly-zoom"><button type="button" aria-label="축소" onClick={() => setZoom((value) => Math.max(.55, value - .2))}>−</button><button type="button" aria-label="확대" onClick={() => setZoom((value) => Math.min(3, value + .2))}>＋</button><button type="button" aria-label="원본 배율" onClick={() => setZoom(1)}>↺</button></div>}{attachment && <a className="source-download" href={attachment.url} download>원본 다운로드</a>}</div>
-    <div ref={viewport} className="universal-source-content" style={attachment?.contentType.startsWith("image/") ? { touchAction: zoom > 1 ? "none" : "auto", cursor: zoom > 1 ? "grab" : "auto" } : undefined} onPointerDown={(event) => { if (!attachment?.contentType.startsWith("image/") || zoom <= 1) return; drag.current = { x: event.clientX, y: event.clientY }; event.currentTarget.setPointerCapture(event.pointerId); }} onPointerMove={(event) => { if (!drag.current || !viewport.current) return; viewport.current.scrollLeft -= event.clientX - drag.current.x; viewport.current.scrollTop -= event.clientY - drag.current.y; drag.current = { x: event.clientX, y: event.clientY }; }} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}>
-      {attachment && isWebPackage(attachment.originalName) ? <MaterialPlayer sourceId={asset.id} attachment={index} />
-      : preview && (attachment?.contentType.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(preview)) ? <img src={preview} alt={`${asset.title} 원문`} draggable={false} style={{ width: `${zoom * 100}%` }} />
-      : preview && attachment?.contentType.startsWith("video/") ? <video src={preview} controls playsInline preload="metadata" />
-      : preview && attachment?.contentType.startsWith("audio/") ? <audio src={preview} controls preload="metadata" />
-      : preview && (attachment?.contentType === "application/pdf" || /\.pdf(?:\?|$)/i.test(preview)) ? <iframe src={preview} title={`${asset.title} PDF 원문`} />
-      : attachment && isTextSource(attachment.originalName, attachment.contentType) ? <SourceTextPreview url={attachment.url} />
-      : asset.extractedTextPreview ? <pre>{asset.extractedTextPreview}</pre>
-      : <div className="source-document-placeholder"><b>{attachment?.originalName.split(".").pop()?.toUpperCase() || "자료"}</b><strong>{asset.title}</strong><span>원본은 보관되어 있습니다. 이 형식은 다운로드해서 열어 주세요.</span></div>}
-    </div>
-  </div>;
+  return <Suspense fallback={<p role="status">원본 보기 준비 중…</p>}><DocumentViewer sourceType={asset.isUpload?"contribution":asset.isReference?"reference":"builtin"} key={asset.id} id={asset.id} title={asset.title} attachments={asset.attachments||[]} fallback={asset.extractedTextPreview||undefined}/></Suspense>;
 }
 
 function LearningDetailExperience({ asset, onBack, onStart, onEdit }: { asset: Asset; onBack: () => void; onStart: (mode: StudyMode) => void; onEdit: () => void }) {

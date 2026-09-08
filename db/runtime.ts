@@ -12,6 +12,7 @@ export type RuntimeEnv = {
   BETTER_AUTH_URL?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
+  INDEXER_TOKEN?: string;
 };
 
 export function getRuntimeEnv(): RuntimeEnv {

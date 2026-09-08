@@ -1,8 +1,10 @@
+import {serveR2File} from "@/lib/file-response";
 import { downloadHeaders } from "@/lib/upload-types";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { storedAttachments } from "@/lib/contribution-attachments";
 
 export async function GET(request: Request) {
-  await ensureSchema(); const user = await getChatGPTUser(); if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 }); const url = new URL(request.url); const id = url.searchParams.get("id") || ""; const index = Number(url.searchParams.get("attachment") || "0"); const { DB, UPLOADS } = getRuntimeEnv(); const row = await DB.prepare("SELECT attachments_json AS attachmentsJson FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(id, user.userId).first<{ attachmentsJson: string }>(); if (!row) return Response.json({ error: "초안을 찾지 못했습니다." }, { status: 404 }); const attachment = storedAttachments(row.attachmentsJson, { originalName: "", contentType: "", objectKey: "" })[index]; if (!attachment) return Response.json({ error: "파일을 찾지 못했습니다." }, { status: 404 }); const object = await UPLOADS.get(attachment.objectKey); if (!object) return Response.json({ error: "파일을 찾지 못했습니다." }, { status: 404 }); const headers = downloadHeaders(attachment.originalName, attachment.contentType); return new Response(object.body, { headers });
+  await ensureSchema(); const user = await getChatGPTUser(); if (!user) return Response.json({ error: "로그인이 필요합니다." }, { status: 401 }); const url = new URL(request.url); const id = url.searchParams.get("id") || ""; const index = Number(url.searchParams.get("attachment") || "0"); const { DB, UPLOADS } = getRuntimeEnv(); const row = await DB.prepare("SELECT attachments_json AS attachmentsJson FROM contribution_drafts WHERE id = ? AND owner_id = ?").bind(id, user.userId).first<{ attachmentsJson: string }>(); if (!row) return Response.json({ error: "초안을 찾지 못했습니다." }, { status: 404 }); const attachment = storedAttachments(row.attachmentsJson, { originalName: "", contentType: "", objectKey: "" })[index]; if (!attachment) return Response.json({ error: "파일을 찾지 못했습니다." }, { status: 404 }); return serveR2File(request,UPLOADS,attachment.objectKey,downloadHeaders(attachment.originalName,attachment.contentType));
 }
+export const HEAD=GET;
