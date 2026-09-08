@@ -212,7 +212,7 @@ function formatViews(value: number) {
   return value >= 10000 ? `${(value / 10000).toFixed(1)}만` : value.toLocaleString("ko-KR");
 }
 
-export function LearningApp({ user:initialUser }: { user: AccountUser | null }) {
+export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: AccountUser | null;searchV2Enabled?:boolean }) {
   const [user,setUser]=useState(initialUser);
   useEffect(()=>{const controller=new AbortController();fetch("/api/session-user",{signal:controller.signal}).then(r=>r.ok?r.json():{user:null}).then(data=>setUser(data.user)).catch(()=>{});return()=>controller.abort()},[]);
   const [view, setView] = useState<View>("search");
@@ -306,6 +306,32 @@ export function LearningApp({ user:initialUser }: { user: AccountUser | null }) 
   }, [user]);
 
   const allAssets = useMemo(() => [...communityAssets, ...referenceAssets, ...assets], [communityAssets, referenceAssets]);
+
+  useEffect(() => {
+    if (searchV2Enabled || !hasSearched || !query) return;
+    let active = true;
+    const controller = new AbortController();
+    setSearching(true);
+    const params = new URLSearchParams({ q: query, subject, type: filter, sort, summary: "1" });
+    fetch(`/api/search?${params}`, { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : { results: [] })
+      .then((data: { results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
+        if (!active) return;
+        const folderResults = (data.results || []).filter((item) => item.sourceType === "folder") as unknown as FolderRecord[];
+        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => ({ ...(item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item)), searchSnippet: item.searchSnippet }));
+        const staticMatches = assets.filter((asset) => {
+          const text = `${asset.title} ${asset.description} ${asset.subject} ${asset.tags.join(" ")}`.toLowerCase();
+          return text.includes(query.toLowerCase()) && (subject === "전체" || asset.subject === subject) && (filter === "전체" || asset.type === filter);
+        });
+        setSearchAssets([...dynamic, ...staticMatches]);
+        setSearchFolders(folderResults);
+        setRelatedTerms(data.related || []);
+        if (data.subjects?.length) setSearchSubjects((current) => [...new Set([...current, ...data.subjects!])]);
+      })
+      .catch(() => { if (active) { setSearchAssets([]); setSearchFolders([]); } })
+      .finally(() => { if (active) setSearching(false); });
+    return () => { active = false; controller.abort(); };
+  }, [filter, hasSearched, query, sort, subject, searchV2Enabled]);
 
   const continuedAsset = useMemo(() => {
     const latest = progress[0];
@@ -444,7 +470,34 @@ export function LearningApp({ user:initialUser }: { user: AccountUser | null }) 
         isHome={view === "search"}
       />
 
-      {view === "search" && <SearchExplorer />}
+      {view === "search" && (searchV2Enabled ? <SearchExplorer /> : (
+<SearchScreen
+          query={query}
+          filter={filter}
+          sort={sort}
+          hasSearched={hasSearched}
+          assets={searchAssets}
+          subject={subject}
+          subjects={searchSubjects}
+          relatedTerms={relatedTerms}
+          searching={searching}
+          user={user}
+          continuedAsset={continuedAsset}
+          myAsset={myAsset}
+          recommendation={recommendation}
+          reference={reference}
+          onFilter={setFilter}
+          onSubject={setSubject}
+          onSort={setSort}
+          onSearch={runSearch}
+          onOpen={openAsset}
+          folders={searchFolders}
+          onOpenFolder={openFolder}
+          onUpdated={updatePublishedContribution}
+          onContribute={() => { setActiveDraft(null); setView(user ? "contribute" : "account"); }}
+          onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
+        />
+))}
       {view === "detail" && (detailLoading || detailError ? <main className="account-main"><button className="back-button" type="button" onClick={backToSearch}>← 검색 결과</button><p role="status">{detailError || "자료를 불러오는 중…"}</p>{detailError && <button className="secondary-button" type="button" onClick={() => openAsset(selectedAsset)}>다시 시도</button>}</main> : <DetailScreen asset={selectedAsset} onBack={backToSearch} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />)}
       {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={backToSearch} onOpen={openAsset} />}
       {view === "study" && (
