@@ -9,9 +9,11 @@ if(!origin.startsWith('https://')&&!/^http:\/\/(127\.0\.0\.1|localhost):/.test(o
 if(typeof config.token!=='string'||config.token.length<32)throw new Error('처리기 인증을 설정해 주세요.');
 const stateDir=path.resolve('.indexer');await fs.mkdir(stateDir,{recursive:true});let stopping=false;process.on('SIGINT',()=>{stopping=true;console.log('현재 구간 저장 후 중지합니다. 다시 run으로 이어갈 수 있습니다.');});
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-async function api(action,body={},method='POST'){
+async function api(action,body={},method='POST',retry=0){
+ try{
  const response=await fetch(origin+'/api/indexer'+(method==='GET'?'?action='+action:''),{method,headers:{Authorization:'Bearer '+config.token,...(method==='POST'?{'Content-Type':'application/json'}:{})},...(method==='POST'?{body:JSON.stringify({action,...body})}:{}),signal:AbortSignal.timeout(60000)});
  const result=await response.json().catch(()=>({error:'처리 서버 응답 오류'}));if(!response.ok){const error=new Error(result.error||'처리 서버 오류');error.status=response.status;if([429,507].includes(response.status)||/quota|limit|storage|크기 한도/i.test(error.message))stopping=true;throw error;}return result;
+ }catch(error){if(retry<2&&['page','heartbeat','seed','external','sources','status','source-seeds'].includes(action)&&/network|fetch failed|connection|timeout|서버 응답 오류/i.test(String(error.message))){await sleep(1000*(retry+1));return api(action,body,method,retry+1);}throw error;}
 }
 if(command==='status'){const status=await api('status',{},'GET');console.log(JSON.stringify({documents:status.documents,jobs:status.jobs,chunks:status.chunks,control:status.control},null,2));}
 else if(command==='inventory'){const list=[];let offset=0;do{const r=await fetch(origin+'/api/indexer?action=inventory&offset='+offset,{headers:{Authorization:'Bearer '+config.token}});if(!r.ok)throw new Error('목록 읽기 실패');const data=await r.json();list.push(...data.documents);offset=data.nextOffset;}while(offset!==null);const output=path.join(stateDir,'inventory.json');await fs.writeFile(output,JSON.stringify(list,null,2));console.log('공개 자료 목록 저장: '+output);}
