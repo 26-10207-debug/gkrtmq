@@ -23,8 +23,10 @@ else if(command==='pause'||command==='resume')console.log(await api('pause',{pau
 else if(command==='retry'){if(!args[1])throw new Error('retry 뒤에 공개 자료 ID를 지정해 주세요.');console.log(await api('retry',{documentId:args[1],processorVersion:PROCESSOR_VERSION}));}
 else if(command==='crawl'){await crawlSources({api,stateDir,stop:()=>stopping});}
 else if(command==='run'){
+ const maximum=Number(args.find(a=>a.startsWith('--max-jobs='))?.split('=')[1]||0);if(!Number.isSafeInteger(maximum)||maximum<0)throw new Error('작업 수를 확인해 주세요.');let handled=0,sourceDay='';
  const extractor=await createExtractor({cachePath:path.join(stateDir,'ocr-cache'),ocr:config.ocr||'auto'});await fs.mkdir(path.join(stateDir,'ocr-cache'),{recursive:true});
  try{do{
+  const day=new Date().toISOString().slice(0,10);if(!args.includes('--no-crawl')&&sourceDay!==day){await crawlSources({api,stateDir,stop:()=>stopping});sourceDay=day;}if(stopping)break;
   const {job,paused}=await api('claim');if(!job){if(args.includes('--watch')&&!stopping){if(!paused&&!args.includes('--no-crawl'))await crawlSources({api,stateDir,stop:()=>stopping});await sleep(30000);continue;}console.log(paused?'서버 처리 대기열이 일시 중지되어 있습니다.':'대기 파일 처리가 끝났습니다.');break;}
   const auth={jobId:job.id,leaseToken:job.leaseToken};let lost=false;const heartbeat=setInterval(()=>{void api('heartbeat',auth).catch(()=>{lost=true})},30000);
   const progress=job.progress?.processorVersion===PROCESSOR_VERSION?job.progress:{};let warnings=Array.isArray(progress.warnings)?progress.warnings:[],supported=Number(progress.supported||0),unsupported=Number(progress.unsupported||0),ordinal=Number(progress.nextOrdinal||0);const hashes=Array.isArray(progress.hashes)?progress.hashes:[];
@@ -55,7 +57,7 @@ else if(command==='run'){
    await api('finish',{...auth,status,message:warnings.join(' · '),hash:crypto.createHash('sha256').update(hashes.join('|')).digest('hex'),processorVersion:PROCESSOR_VERSION});console.log('처리 상태: '+status);
   }catch(error){if(!lost){try{await api('fail',{...auth,message:/quota|limit|storage/i.test(error.message)?'서버 저장·요청 한도: 처리 중지':'파일 처리 실패: '+String(error.message).slice(0,250)})}catch{/* Lost leases must not be written again. */}}console.error('처리 실패 ('+(error.status||'extract')+'): '+String(error.message).slice(0,200));if(error.status===429||stopping)break;await sleep(2000);}
   finally{clearInterval(heartbeat);}
- }while(!stopping);
+ }while(!stopping&&(!maximum||++handled<maximum));
  if(!stopping&&!args.includes('--no-crawl')){try{await crawlSources({api,stateDir,stop:()=>stopping})}catch{console.log('외부 출처 갱신은 다음 실행에서 다시 확인합니다.');}}
  }finally{await extractor.close();}
 }else throw new Error('명령: status | inventory | seed | run | crawl | pause | resume | retry ID | activate | rollback');
