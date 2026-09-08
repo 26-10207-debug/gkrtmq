@@ -1,5 +1,5 @@
 import {searchLibrary,searchReady} from "./search-service";
-import {publicIndexedDocument} from "./search-index-v2";
+import {publicSections} from "./public-sections";
 import {readJson,type SearchInput} from "./search-model";
 import { ensureSchema, getRuntimeEnv } from "@/db/runtime";
 import { storedAttachments } from "@/lib/contribution-attachments";
@@ -34,11 +34,11 @@ export async function fetchPublic(inputId: string, origin: string, offset=0) {
   if (!id || id.length > 200) throw new Error("자료 ID를 확인해 주세요.");
   const url = `${origin}/?material=${encodeURIComponent(`${type}:${id}`)}`;
   if(await searchReady(DB)){
-    const doc=await publicIndexedDocument(DB,type+":"+id);if(!doc)throw new Error("공개 자료를 찾을 수 없습니다.");
-    const rows=await DB.prepare("SELECT content,location_json FROM search_v2_chunks WHERE document_id=? AND field<>'meta' ORDER BY ordinal,id LIMIT 11 OFFSET ?").bind(type+":"+id,offset).all<{content:string;location_json:string}>();
+    const {doc,rows:sectionRows}=await publicSections(DB,type+":"+id,offset);if(!doc)throw new Error("공개 자료를 찾을 수 없습니다.");
+    const rows={results:sectionRows};
     const summary=readJson<Record<string,unknown>>(doc.summary_json,{});const sections=rows.results.slice(0,10).map(r=>({text:r.content,...readJson(r.location_json,{})}));
-    const items=type==="folder"?(await DB.prepare("SELECT c.id,c.title FROM public_folder_items fi JOIN contributions c ON c.id=fi.contribution_id WHERE fi.folder_id=? AND c.status IN ('published','published_ai') ORDER BY fi.position").bind(id).all<{id:string;title:string}>()).results.map(item=>({id:'contribution:'+item.id,title:item.title,url:origin+'/?material='+encodeURIComponent('contribution:'+item.id)})):undefined;
-    return {items,id:type+":"+id,title:String(doc.title),url,text:sections.length?sections.map(s=>s.text).join("\n\n"):String(doc.description),sections,nextOffset:rows.results.length>10?offset+10:null,metadata:{licenseNote:summary.licenseNote,subject:doc.subject,tags:readJson(doc.tags_json,[]),sourceUrl:doc.source_url,sourceName:doc.source_name,indexStatus:doc.index_status,indexMessage:doc.index_message,truncated:rows.results.length>10},files:(Array.isArray(summary.attachments)?summary.attachments:[]).map((f,i)=>({...f,index:i,name:f.originalName,url:origin+"/api/files?id="+encodeURIComponent(id)+"&attachment="+i}))};
+    const items=type==="folder"?(await DB.prepare("SELECT c.id,c.title FROM public_folder_items fi JOIN contributions c ON c.id=fi.contribution_id WHERE fi.folder_id=? AND c.status IN ('published','published_ai') AND EXISTS(SELECT 1 FROM public_folders f WHERE f.id=fi.folder_id AND f.visibility_state='published') ORDER BY fi.position").bind(id).all<{id:string;title:string}>()).results.map(item=>({id:'contribution:'+item.id,title:item.title,url:origin+'/?material='+encodeURIComponent('contribution:'+item.id)})):undefined;
+    return {items,id:type+":"+id,title:String(doc.title),url,text:sections.length?sections.map(s=>s.text).join("\n\n"):String(doc.description),sections,nextOffset:rows.results.length>10?offset+10:null,metadata:{lastCheckedAt:summary.lastCheckedAt,collectionState:summary.collectionState,collectionError:summary.collectionError,licenseNote:summary.licenseNote,subject:doc.subject,tags:readJson(doc.tags_json,[]),sourceUrl:doc.source_url,sourceName:doc.source_name,indexStatus:doc.index_status,indexMessage:doc.index_message,truncated:rows.results.length>10},files:(Array.isArray(summary.attachments)?summary.attachments:[]).map((f,i)=>({...f,index:i,name:f.originalName,url:origin+"/api/files?id="+encodeURIComponent(id)+"&attachment="+i}))};
   }
   if (type === "contribution") {
     const row = await DB.prepare(`SELECT id, title, subject, source_note AS sourceNote, owner_display_name AS author, created_at AS createdAt,

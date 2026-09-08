@@ -8,6 +8,7 @@ export async function indexExternal(DB:D1Database,input:Record<string,unknown>){
  // These source policies currently allow discovery metadata only. No remote file/body redistribution.
  if(!input.error || !(await DB.prepare('SELECT id FROM reference_library WHERE id=?').bind(id).first())) await DB.prepare("INSERT INTO reference_library(id,title,description,topic,subject,source_name,source_url,license_note,access_mode,tags_json) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,description=excluded.description,updated_at=CURRENT_TIMESTAMP").bind(id,title,description,'공개 교육 자료','분류 없음',source.name,url.href,source.note,'external_link',JSON.stringify([source.name,'외부 공개 자료'])).run();
  await syncSearchV2(DB,'reference',id);
+ if(input.checkedAt)await DB.prepare("UPDATE search_v2_documents SET summary_json=json_set(summary_json,'$.lastCheckedAt',?,'$.collectionState',?,'$.collectionError',?) WHERE id=?").bind(String(input.checkedAt).slice(0,40),input.error?'unavailable':'metadata',String(input.error||'').slice(0,300),'reference:'+id).run();
  if(input.checkedAt)await DB.prepare("UPDATE search_v2_sources SET last_checked=?,last_error=? WHERE id=? AND (last_checked IS NULL OR last_checked<=?)").bind(String(input.checkedAt),String(input.error||'').slice(0,300),source.id,String(input.checkedAt)).run();
  return {id:'reference:'+id,state:'metadata'};
 }

@@ -4,7 +4,7 @@ import {XMLParser} from 'fast-xml-parser';
 import {createRequire} from 'node:module';
 import path from 'node:path';
 const require=createRequire(import.meta.url),MAX_BYTES=16*1024*1024;
-export const PROCESSOR_VERSION='dcl-extractor-2.0.0';
+export const PROCESSOR_VERSION='dcl-extractor-2.0.1';
 export function safeZip(bytes){let total=0,count=0;const files=unzipSync(bytes,{filter:file=>{if(++count>256)throw new Error('압축 항목 256개 한도');total+=file.originalSize;if(total>MAX_BYTES)throw new Error('압축 해제 16MB 한도');if(file.name.endsWith('/'))return false;if(!file.name||file.name.startsWith('/')||/[\\:?#]/.test(file.name)||file.name.split('/').some(p=>!p||p==='..')||Array.from(file.name).some(c=>c.charCodeAt(0)<32))throw new Error('안전하지 않은 압축 경로');return !file.name.startsWith('__MACOSX/');}});if(Object.values(files).reduce((n,v)=>n+v.length,0)>MAX_BYTES)throw new Error('압축 해제 한도');return files;}
 export function htmlText(html){const document=parse(html);const chunks=[];function visit(node){if(['script','style','noscript','template','iframe'].includes(node.tagName))return;if(node.nodeName==='#text')chunks.push(node.value);for(const c of node.childNodes||[])visit(c);if(['p','div','li','h1','h2','h3','tr','br'].includes(node.tagName))chunks.push('\n');}visit(document);return chunks.join(' ').replace(/[ \t]+/g,' ').replace(/\n\s+/g,'\n').trim();}
 function xml(bytes){const value=strFromU8(bytes);if(/<!DOCTYPE|<!ENTITY/i.test(value))throw new Error('외부 XML 엔터티 미지원');if(value.length>MAX_BYTES)throw new Error('XML 크기 한도');return new XMLParser({preserveOrder:true,ignoreAttributes:false,processEntities:false,parseTagValue:false,parseAttributeValue:false,trimValues:false}).parse(value);}
