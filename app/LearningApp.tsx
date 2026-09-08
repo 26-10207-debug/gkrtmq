@@ -1,10 +1,10 @@
 "use client";
 
 import { CSSProperties, FormEvent, Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
-import { SearchExplorer } from "./SearchExplorer";
 const DocumentViewer=lazy(()=>import("./DocumentViewer"));
 import { MaterialPlayer, SourceTextPreview } from "./MaterialPlayer";
 import { builtinAssets, examples, recallQuestions } from "@/lib/builtin-materials";
+import type { MatchLocation } from "@/lib/search-model";
 import { contentTypeFor, isTextSource, isWebPackage, MAX_UPLOAD_BYTES, MAX_TOTAL_UPLOAD_BYTES, MAX_UPLOAD_COUNT } from "@/lib/upload-types";
 import { AuthPanel, SignOutButton } from "./AuthPanel";
 import { ConceptCanvas, ConceptCanvasElement, ConceptModel, CustomMaterials, SourceSelection, conceptShapeDefinitions, emptyCustomMaterials, hasCustomMaterials, hasImageSelection } from "@/lib/custom-materials";
@@ -49,6 +49,8 @@ type Asset = {
   customMaterials?: CustomMaterials;
   subject?: string;
   searchSnippet?: string;
+  matchLocation?: MatchLocation;
+  thumbnailUrl?: string;
 };
 
 type AccountUser = { displayName: string; email: string; authMethod: "chatgpt" | "app" };
@@ -191,11 +193,12 @@ function referenceToAsset(item: ReferenceRecord): Asset {
     licenseNote: item.licenseNote,
     accessMode: item.accessMode,
     isReference: true,
-    subject: item.subject || item.topic.split(" · ")[0] || "분류 없음",
+    subject: item.subject || (item.topic || "").split(" · ")[0] || "분류 없음",
   };
 }
 
 function previewForAsset(asset: Asset) {
+  if (asset.thumbnailUrl) return asset.thumbnailUrl;
   const image = asset.attachments?.find((attachment) => attachment.contentType.startsWith("image/"));
   return image?.url;
 }
@@ -212,7 +215,7 @@ function formatViews(value: number) {
   return value >= 10000 ? `${(value / 10000).toFixed(1)}만` : value.toLocaleString("ko-KR");
 }
 
-export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: AccountUser | null;searchV2Enabled?:boolean }) {
+export function LearningApp({ user:initialUser }: { user: AccountUser | null }) {
   const [user,setUser]=useState(initialUser);
   useEffect(()=>{const controller=new AbortController();fetch("/api/session-user",{signal:controller.signal}).then(r=>r.ok?r.json():{user:null}).then(data=>setUser(data.user)).catch(()=>{});return()=>controller.abort()},[]);
   const [view, setView] = useState<View>("search");
@@ -241,8 +244,24 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
   const [relatedTerms, setRelatedTerms] = useState<string[]>([]);
   const [searchSubjects, setSearchSubjects] = useState<string[]>(["물리학", "영어", "수학", "철학", "기타", "분류 없음"]);
   const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState("");
+  const [searchRevision, setSearchRevision] = useState(0);
   const [progress, setProgress] = useState<LearningProgress[]>([]);
   const [activeDraft, setActiveDraft] = useState<DraftRecord | null>(null);
+
+  useEffect(() => {
+    const sync = () => {
+      const params = new URLSearchParams(window.location.search);
+      const value = params.get("q") || "";
+      setQuery(value); setHasSearched(Boolean(value));
+      setSubject(params.get("subject") || "전체");
+      setFilter(params.get("type") || "전체");
+      setSort(params.get("sort") || "relevance");
+      if (!params.has("material")) setView("search");
+    };
+    sync(); window.addEventListener("popstate", sync);
+    return () => window.removeEventListener("popstate", sync);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -308,30 +327,74 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
   const allAssets = useMemo(() => [...communityAssets, ...referenceAssets, ...assets], [communityAssets, referenceAssets]);
 
   useEffect(() => {
-    if (searchV2Enabled || !hasSearched || !query) return;
+    if (view !== "search" || !hasSearched || !query) return;
     let active = true;
     const controller = new AbortController();
+    let observer: IntersectionObserver | undefined;
+    let loading = false;
+    let cursor: string | null = null;
+    let restarted = false;
+    const seen = new Set<string>();
+    const accumulated: Asset[] = [];
+    const folders: FolderRecord[] = [];
     setSearching(true);
-    const params = new URLSearchParams({ q: query, subject, type: filter, sort, summary: "1" });
-    fetch(`/api/search?${params}`, { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : { results: [] })
-      .then((data: { results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; tags?: string[] }>; related?: string[]; subjects?: string[] }) => {
+    setSearchError("");
+    setSearchAssets([]); setSearchFolders([]);
+    const params = new URLSearchParams(window.location.search);
+    ["material", "attachment", "page", "path", "line", "cursor", "duplicates"].forEach(key => params.delete(key));
+    params.set("q", query); params.set("subject", subject); params.set("type", filter); params.set("sort", sort); params.set("summary", "1"); params.set("limit", "20");
+    async function loadPage() {
+      if (!active || loading) return;
+      loading = true;
+      observer?.disconnect();
+      try {
+        if (cursor) params.set("cursor", cursor); else params.delete("cursor");
+        const response = await fetch(`/api/search?${params}`, { signal: controller.signal });
+        const data = await response.json() as { error?: string; engine?: string; nextCursor?: string | null; results?: Array<ContributionRecord & ReferenceRecord & FolderRecord & { sourceType?: string; searchSnippet?: string; matchLocation?: MatchLocation; thumbnailUrl?: string; tags?: string[] }>; related?: string[]; subjects?: string[] };
         if (!active) return;
-        const folderResults = (data.results || []).filter((item) => item.sourceType === "folder") as unknown as FolderRecord[];
-        const dynamic = (data.results || []).filter((item) => item.sourceType !== "folder").map((item) => ({ ...(item.sourceType === "reference" ? referenceToAsset(item) : contributionToAsset(item)), searchSnippet: item.searchSnippet }));
-        const staticMatches = assets.filter((asset) => {
+        if (!response.ok) {
+          if (cursor && response.status === 400 && !restarted) {
+            restarted = true; cursor = null; seen.clear(); accumulated.length = 0; folders.length = 0;
+            loading = false; await loadPage(); return;
+          }
+          throw new Error(data.error || "검색을 완료하지 못했습니다. 검색 버튼을 눌러 다시 시도해 주세요.");
+        }
+        for (const item of data.results || []) {
+          const key = `${item.sourceType}:${item.id}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          if (item.sourceType === "folder") { folders.push(item); continue; }
+          const asset = item.sourceType === "builtin" ? assets.find(asset => asset.id === item.id)
+            : item.sourceType === "reference" ? referenceToAsset({ ...item, tagsJson: item.tagsJson || JSON.stringify(item.tags || []) })
+            : contributionToAsset(item);
+          if (asset) accumulated.push({ ...asset, searchSnippet: item.searchSnippet, matchLocation: item.matchLocation, thumbnailUrl: item.thumbnailUrl });
+        }
+        const staticMatches = data.engine === "v2" ? [] : assets.filter((asset) => {
           const text = `${asset.title} ${asset.description} ${asset.subject} ${asset.tags.join(" ")}`.toLowerCase();
           return text.includes(query.toLowerCase()) && (subject === "전체" || asset.subject === subject) && (filter === "전체" || asset.type === filter);
         });
-        setSearchAssets([...dynamic, ...staticMatches]);
-        setSearchFolders(folderResults);
+        setSearchAssets([...accumulated, ...staticMatches]);
+        setSearchFolders([...folders]);
         setRelatedTerms(data.related || []);
         if (data.subjects?.length) setSearchSubjects((current) => [...new Set([...current, ...data.subjects!])]);
-      })
-      .catch(() => { if (active) { setSearchAssets([]); setSearchFolders([]); } })
-      .finally(() => { if (active) setSearching(false); });
-    return () => { active = false; controller.abort(); };
-  }, [filter, hasSearched, query, sort, subject, searchV2Enabled]);
+        cursor = data.nextCursor || null;
+        if (cursor) window.requestAnimationFrame(() => {
+          if (!active) return;
+          const lastCard = document.querySelector(".result-card-gallery > :last-child");
+          if (!lastCard) return;
+          observer = new IntersectionObserver(entries => { if (entries.some(entry => entry.isIntersecting)) void loadPage(); }, { rootMargin: "500px" });
+          observer.observe(lastCard);
+        });
+      } catch (error) {
+        if (active) setSearchError(error instanceof Error ? error.message : "검색에 문제가 생겼습니다. 다시 검색해 주세요.");
+      } finally {
+        loading = false;
+        if (active) setSearching(false);
+      }
+    }
+    void loadPage();
+    return () => { active = false; controller.abort(); observer?.disconnect(); };
+  }, [filter, hasSearched, query, sort, subject, view, searchRevision]);
 
   const continuedAsset = useMemo(() => {
     const latest = progress[0];
@@ -343,6 +406,10 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
   const reference = referenceAssets[0];
 
   function openAsset(asset: Asset) {
+    const url = new URL(window.location.href);
+    ["attachment", "page", "path", "line"].forEach(key => url.searchParams.delete(key));
+    for (const [key, value] of Object.entries(asset.matchLocation || {})) if (["attachment", "page", "path", "line"].includes(key) && value !== undefined) url.searchParams.set(key, String(value));
+    window.history.replaceState({}, "", url.pathname + url.search);
     detailAbort.current?.abort();
     setDetailError(""); setDetailLoading(false);
     setSelectedAsset(asset);
@@ -398,12 +465,25 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
   function showHome(){window.location.assign("/");}
 
   function runSearch(value: string) {
+    const url = new URL(window.location.href);
+    url.search = "";
+    if (value.trim()) url.searchParams.set("q", value.trim());
+    window.history.pushState({}, "", url.pathname + url.search);
     setQuery(value.trim());
     setFilter("전체");
     setSubject("전체");
     setSort("relevance");
     setHasSearched(Boolean(value.trim()));
+    setSearchRevision(revision => revision + 1);
     window.requestAnimationFrame(() => document.getElementById("explore")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  }
+
+  function updateSearchFilter(key: "type" | "subject" | "sort", value: string) {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("cursor");
+    if (value === "전체" || value === "relevance") url.searchParams.delete(key); else url.searchParams.set(key, value);
+    window.history.pushState({}, "", url.pathname + url.search);
+    if (key === "type") setFilter(value); else if (key === "subject") setSubject(value); else setSort(value);
   }
 
   function addPublishedContribution(item: ContributionRecord) {
@@ -470,8 +550,8 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
         isHome={view === "search"}
       />
 
-      {view === "search" && (searchV2Enabled ? <SearchExplorer /> : (
-<SearchScreen
+      {view === "search" && (
+        <SearchScreen
           query={query}
           filter={filter}
           sort={sort}
@@ -481,14 +561,15 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
           subjects={searchSubjects}
           relatedTerms={relatedTerms}
           searching={searching}
+          searchError={searchError}
           user={user}
           continuedAsset={continuedAsset}
           myAsset={myAsset}
           recommendation={recommendation}
           reference={reference}
-          onFilter={setFilter}
-          onSubject={setSubject}
-          onSort={setSort}
+          onFilter={value => updateSearchFilter("type", value)}
+          onSubject={value => updateSearchFilter("subject", value)}
+          onSort={value => updateSearchFilter("sort", value)}
           onSearch={runSearch}
           onOpen={openAsset}
           folders={searchFolders}
@@ -497,7 +578,7 @@ export function LearningApp({ user:initialUser,searchV2Enabled=false }: { user: 
           onContribute={() => { setActiveDraft(null); setView(user ? "contribute" : "account"); }}
           onResume={(asset, mode) => { openAsset(asset); window.setTimeout(() => startStudy(mode), 0); }}
         />
-))}
+      )}
       {view === "detail" && (detailLoading || detailError ? <main className="account-main"><button className="back-button" type="button" onClick={backToSearch}>← 검색 결과</button><p role="status">{detailError || "자료를 불러오는 중…"}</p>{detailError && <button className="secondary-button" type="button" onClick={() => openAsset(selectedAsset)}>다시 시도</button>}</main> : <DetailScreen asset={selectedAsset} onBack={backToSearch} onStart={startStudy} onEdit={() => void editAsset(selectedAsset)} />)}
       {view === "folder" && selectedFolder && <FolderScreen folder={selectedFolder} onBack={backToSearch} onOpen={openAsset} />}
       {view === "study" && (
@@ -562,6 +643,7 @@ function SearchScreen(props: {
   folders: FolderRecord[];
   relatedTerms: string[];
   searching: boolean;
+  searchError: string;
   user: AccountUser | null;
   continuedAsset?: Asset;
   myAsset?: Asset;
@@ -609,7 +691,7 @@ function SearchScreen(props: {
           <div>
             <p className="eyebrow">통합 검색 결과</p>
             <h2>‘{props.query}’ 관련 학습 자료</h2>
-            <p>{props.searching ? "공개 학습 내용을 찾고 있어요." : `${props.assets.length}개 결과 · 기여 자료와 출처가 확인된 참고 자료를 함께 보여드려요.`}</p>
+            <p role={props.searchError ? "alert" : undefined}>{props.searchError || (props.searching ? "공개 학습 내용을 찾고 있어요." : `${props.assets.length + props.folders.length}개 결과 · 기여 자료와 출처가 확인된 참고 자료를 함께 보여드려요.`)}</p>
           </div>
           <details className="filter-panel"><summary>필터와 정렬 <span>⌄</span></summary><div className="filter-content"><p className="section-label">자료 유형</p><div className="filter-buttons">{filters.map((item) => <button key={item} className={props.filter === item ? "filter-button active" : "filter-button"} type="button" onClick={() => props.onFilter(item)}>{item}</button>)}</div><label className="sort-control">과목<select aria-label="과목" value={props.subject} onChange={(event) => props.onSubject(event.target.value)}><option value="전체">전체 과목</option>{props.subjects.map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label className="sort-control">정렬<select aria-label="정렬 방식" value={props.sort} onChange={(event) => props.onSort(event.target.value)}><option value="relevance">관련도순</option><option value="rating">평가순</option><option value="views">조회순</option></select></label></div></details>
         </div>
@@ -620,7 +702,7 @@ function SearchScreen(props: {
         <div className="result-card-gallery">
           {props.assets.map((asset, index) => (
             <button className="visual-result-card" type="button" key={asset.id} onClick={() => props.onOpen(asset)}>
-              <span className={`result-preview ${previewForAsset(asset) ? "has-image" : ""}`}>{previewForAsset(asset) ? <img src={previewForAsset(asset)} alt="" /> : <b>{asset.subject || "학습"}</b>}</span>
+              <span className={`result-preview ${previewForAsset(asset) ? "has-image" : ""}`}>{previewForAsset(asset) ? <img src={previewForAsset(asset)} alt="" loading="lazy" decoding="async" /> : <b>{asset.subject || "학습"}</b>}</span>
               <span className="file-copy">
                 <span className="file-title">{asset.title}</span>
                 <span className="file-description">{asset.searchSnippet ? <MarkedSnippet text={asset.searchSnippet} /> : asset.description}</span>
@@ -630,7 +712,7 @@ function SearchScreen(props: {
             </button>
           ))}
           {props.folders.map((folder) => <button className="visual-result-card folder-result-card" type="button" key={folder.id} onClick={() => props.onOpenFolder(folder)}><span className="result-preview"><b>폴더</b></span><span className="file-copy"><span className="file-title">{folder.title}</span><span className="file-description">{folder.description || `${folder.itemCount || 0}개의 공개 학습 자료`}</span><span className="tag-row"><span className="tag accent">{folder.subject}</span><span className="tag">공개 폴더</span><span className="tag">{folder.itemCount || 0}개 자료</span></span></span><span className="card-arrow">→</span></button>)}
-          {!props.assets.length && !props.folders.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
+          {!props.searching && !props.searchError && !props.assets.length && !props.folders.length && <div className="empty-state"><strong>일치하는 학습 파일이 없습니다.</strong><span>다른 표현이나 연관 개념으로 검색해 보세요.</span></div>}
         </div>
         </>}
       </main>
